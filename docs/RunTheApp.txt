@@ -1,0 +1,15 @@
+export OPENAI_API_KEY=your_key_here
+uvicorn app.main:app --reload
+
+
+Swagger UI:
+
+arduino
+Copy code
+http://127.0.0.1:8000/docs
+✅ What You Have Now
+✔ Real RAG pipeline
+✔ FastAPI backend
+✔ Vector search (FAISS)
+✔ Grounded LLM answers
+✔ Enterprise-ready structure
