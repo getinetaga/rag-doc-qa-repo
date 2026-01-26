@@ -1,0 +1,14 @@
+.env
+.env.*
+# Python cache
+__pycache__/
+*.py[cod]
+# Virtual environments
+.venv/
+venv/
+# Editor directories
+.vscode/
+# macOS
+.DS_Store
+# pytest cache
+.pytest_cache/
