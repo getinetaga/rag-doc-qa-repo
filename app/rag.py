@@ -2,16 +2,40 @@
 
 import os
 
-from openai import OpenAI
 import requests
+from openai import OpenAI, OpenAIError
 
 from .config import (HUGGINGFACE_API_KEY, LLM_MODEL, LLM_PROVIDER,
                      OPENAI_API_KEY, TOP_K)
 from .embeddings import embed_text
 
-# Initialize OpenAI client. If OPENAI_API_KEY is not set, the client will
-# fall back to the environment variable behavior supported by the SDK.
-_openai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else OpenAI()
+_openai_client = None
+
+
+def _get_openai_client():
+    """Lazily create and return an OpenAI client.
+
+    This avoids raising an exception at import time when `OPENAI_API_KEY`
+    is not set. The client will raise a clear error only when OpenAI is
+    actually used and the API key is missing.
+    """
+    global _openai_client
+    if _openai_client is not None:
+        return _openai_client
+
+    try:
+        if OPENAI_API_KEY:
+            _openai_client = OpenAI(api_key=OPENAI_API_KEY)
+        else:
+            # Let the SDK pick up the key from environment variables if set;
+            # this will raise OpenAIError if no key is available when used.
+            _openai_client = OpenAI()
+        return _openai_client
+    except OpenAIError as e:
+        # Re-raise with a clearer message for callers
+        raise OpenAIError(
+            "OpenAI client initialization failed: set OPENAI_API_KEY in environment or .env"
+        ) from e
 
 
 def _call_huggingface(model: str, prompt: str) -> str:
@@ -69,7 +93,8 @@ Question:
 
     # Default: use OpenAI Responses API (1.x SDK)
     try:
-        response = _openai_client.responses.create(
+        client = _get_openai_client()
+        response = client.responses.create(
             model=LLM_MODEL,
             input=prompt,
             temperature=0
