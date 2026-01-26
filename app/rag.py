@@ -1,10 +1,74 @@
 # Retrieval + Generation
 
-import openai
-from .config import OPENAI_API_KEY, LLM_MODEL, TOP_K
+import os
+
+import requests
+from openai import OpenAI, OpenAIError
+
+from .config import (HUGGINGFACE_API_KEY, LLM_MODEL, LLM_PROVIDER,
+                     OPENAI_API_KEY, TOP_K)
 from .embeddings import embed_text
 
-openai.api_key = OPENAI_API_KEY
+_openai_client = None
+
+
+def _get_openai_client():
+    """Lazily create and return an OpenAI client.
+
+    This avoids raising an exception at import time when `OPENAI_API_KEY`
+    is not set. The client will raise a clear error only when OpenAI is
+    actually used and the API key is missing.
+    """
+    global _openai_client
+    if _openai_client is not None:
+        return _openai_client
+
+    try:
+        if OPENAI_API_KEY:
+            _openai_client = OpenAI(api_key=OPENAI_API_KEY)
+        else:
+            # Let the SDK pick up the key from environment variables if set;
+            # this will raise OpenAIError if no key is available when used.
+            _openai_client = OpenAI()
+        return _openai_client
+    except OpenAIError as e:
+        # Re-raise with a clearer message for callers
+        raise OpenAIError(
+            "OpenAI client initialization failed: set OPENAI_API_KEY in environment or .env"
+        ) from e
+
+
+def _call_huggingface(model: str, prompt: str) -> str:
+    if not HUGGINGFACE_API_KEY:
+        raise ValueError("HUGGINGFACE_API_KEY is not set in environment")
+
+    url = f"https://api-inference.huggingface.co/models/{model}"
+    headers = {"Authorization": f"Bearer {HUGGINGFACE_API_KEY}"}
+    payload = {"inputs": prompt, "parameters": {"max_new_tokens": 512}}
+
+    resp = requests.post(url, headers=headers, json=payload, timeout=30)
+    resp.raise_for_status()
+    data = resp.json()
+
+    # Hugging Face inference API may return different shapes; handle common ones
+    if isinstance(data, dict) and "error" in data:
+        raise RuntimeError(f"Hugging Face API error: {data['error']}")
+
+    if isinstance(data, list):
+        # Typical text-generation response: [{'generated_text': '...'}]
+        first = data[0]
+        if isinstance(first, dict) and "generated_text" in first:
+            return first["generated_text"]
+        # Some models return a plain string in first element
+        if isinstance(first, str):
+            return first
+
+    if isinstance(data, dict) and "generated_text" in data:
+        return data["generated_text"]
+
+    # Fallback to string conversion
+    return str(data)
+
 
 def generate_answer(question, vector_store):
     query_embedding = embed_text([question])[0]
@@ -23,10 +87,38 @@ Question:
 {question}
 """
 
-    response = openai.ChatCompletion.create(
-        model=LLM_MODEL,
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0
-    )
+    if LLM_PROVIDER.lower() == "huggingface":
+        # Use the Hugging Face Inference API
+        return _call_huggingface(LLM_MODEL, prompt)
 
-    return response.choices[0].message.content
+    # Default: use OpenAI Responses API (1.x SDK)
+    try:
+        client = _get_openai_client()
+        response = client.responses.create(
+            model=LLM_MODEL,
+            input=prompt,
+            temperature=0
+        )
+
+        # Prefer the convenience property if available
+        if hasattr(response, "output_text") and response.output_text:
+            return response.output_text
+
+        # Fallback: assemble text from structured output
+        outputs = []
+        for item in getattr(response, "output", []) or []:
+            # each item may have a `content` list containing dicts or strings
+            for chunk in item.get("content", []) if isinstance(item, dict) else []:
+                if isinstance(chunk, dict) and "text" in chunk:
+                    outputs.append(chunk["text"])
+                elif isinstance(chunk, str):
+                    outputs.append(chunk)
+
+        if outputs:
+            return "".join(outputs)
+
+        # Last resort: stringify the response
+        return str(response)
+    except Exception:
+        # Surface the error rather than failing silently
+        raise
