@@ -3,13 +3,13 @@ import tempfile
 import time
 
 import streamlit as st
-
+# Pipeline building blocks (local package modules)
 from app.chunking import chunk_text
 from app.embeddings import embed_text
 from app.ingestion import extract_text
 from app.rag import generate_answer
 from app.vector_store import VectorStore
-
+#setpage title.
 st.set_page_config(page_title="RAG Demo (in-process)", page_icon="📚", layout="wide")
 
 st.title("📚 RAG Document QA — In-Process Demo")
