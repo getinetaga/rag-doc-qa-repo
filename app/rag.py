@@ -1,4 +1,22 @@
-# Retrieval + Generation
+"""Retrieval-augmented generation helpers.
+
+This module wires retrieval (vector search) with text generation. It
+provides two provider backends: Hugging Face Inference API and OpenAI's
+Responses API (v1 SDK). The primary public function is `generate_answer`
+which accepts a user question and a `vector_store` instance and returns a
+generated answer string.
+
+Behavior:
+- The function retrieves the top-K context chunks from the provided
+    `vector_store`, constructs a prompt that instructs the LLM to answer
+    using only the provided context, and then calls the configured LLM
+    provider to generate a response.
+
+Notes:
+- OpenAI client initialization is lazy to avoid import-time failures when
+    `OPENAI_API_KEY` is not yet available. A clear error is raised when the
+    client is first used and the API key is missing.
+"""
 
 import os
 
@@ -6,7 +24,7 @@ import requests
 from openai import OpenAI, OpenAIError
 
 from .config import (HUGGINGFACE_API_KEY, LLM_MODEL, LLM_PROVIDER,
-                     OPENAI_API_KEY, TOP_K)
+                                         OPENAI_API_KEY, TOP_K)
 from .embeddings import embed_text
 
 _openai_client = None
@@ -39,6 +57,20 @@ def _get_openai_client():
 
 
 def _call_huggingface(model: str, prompt: str) -> str:
+    """Call the Hugging Face Inference API for a single-text prompt.
+
+    Args:
+        model: Hugging Face model identifier (e.g., 'gpt2').
+        prompt: Full prompt text to send to the model.
+
+    Returns:
+        The generated text returned by the model as a string.
+
+    Raises:
+        ValueError: if `HUGGINGFACE_API_KEY` is not configured.
+        requests.HTTPError: for non-2xx HTTP responses.
+    """
+
     if not HUGGINGFACE_API_KEY:
         raise ValueError("HUGGINGFACE_API_KEY is not set in environment")
 
@@ -71,6 +103,32 @@ def _call_huggingface(model: str, prompt: str) -> str:
 
 
 def generate_answer(question, vector_store):
+    """Generate an answer for `question` using `vector_store` as context.
+
+    This function:
+    1. Embeds the user `question` and retrieves the top-K most similar
+       chunks from `vector_store`.
+    2. Assembles a prompt that instructs the model to answer using ONLY
+       the provided context.
+    3. Calls the configured LLM provider (Hugging Face or OpenAI Responses)
+       and returns the generated text.
+
+    Args:
+        question: User question as a string.
+        vector_store: Object implementing `search(query_embedding, top_k)` and
+            returning a list of text chunks. This module expects the
+            repository's `VectorStore` interface.
+
+    Returns:
+        A string containing the model's answer. If the model cannot find the
+        answer in the context, it should respond with "I don't know." as
+        instructed in the prompt.
+
+    Raises:
+        Any exceptions raised by the underlying embedding/model APIs will
+        propagate to the caller.
+    """
+
     query_embedding = embed_text([question])[0]
     context_chunks = vector_store.search(query_embedding, TOP_K)
 

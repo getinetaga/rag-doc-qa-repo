@@ -164,7 +164,7 @@ with st.sidebar:
     The system uses:
     - **Sentence Transformers** for embeddings
     - **FAISS** for vector search
-    - **OpenAI GPT** for answer generation
+    - **OpenAI GPT** or **Hugging Face** for answer generation
     """)
     
     st.markdown("---")
