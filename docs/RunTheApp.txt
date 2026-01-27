@@ -1,15 +1,73 @@
-export OPENAI_API_KEY=your_key_here
-uvicorn app.main:app --reload
+This file describes simple, cross-platform steps to run the example
+RAG application locally. It assumes you cloned the repository and are
+inside the project root.
 
+1) Create and activate a virtual environment (recommended)
 
-Swagger UI:
+	# macOS / Linux
+	python3 -m venv .venv
+	source .venv/bin/activate
 
-arduino
-Copy code
-http://127.0.0.1:8000/docs
+	# Windows (PowerShell)
+	python -m venv .venv
+	.\.venv\Scripts\Activate.ps1
+
+	# Windows (cmd.exe)
+	python -m venv .venv
+	.\.venv\Scripts\activate.bat
+
+2) Install Python dependencies
+
+	pip install --upgrade pip
+	pip install -r requirements.txt
+
+3) Configure API keys / environment
+
+	The app supports OpenAI and Hugging Face backends. Set keys in your
+	shell or create a `.env` file in the repo root. Example `.env`:
+
+	OPENAI_API_KEY="sk-..."
+	HUGGINGFACE_API_KEY="hf_..."
+	LLM_PROVIDER=openai      # or huggingface
+	LLM_MODEL=gpt-4o-mini    # adjust as needed
+
+	Cross-platform examples (temporary in-session):
+	- macOS / Linux: export OPENAI_API_KEY="sk-..."
+	- PowerShell:    $env:OPENAI_API_KEY = "sk-..."
+	- cmd.exe:       set OPENAI_API_KEY=sk-...
+
+	The project includes a lightweight `.env` loader (`app/config.py`) that
+	will populate environment variables during local runs if a `.env` file
+	is present and variables are not already set.
+
+4) Run the FastAPI server (development)
+
+	uvicorn app.main:app --reload
+
+	- Server will be available at: http://127.0.0.1:8000
+	- Swagger UI (interactive docs): http://127.0.0.1:8000/docs
+
+5) Run the Streamlit in-process demo (alternative)
+
+	streamlit run app/streamlit_demo.py
+
+6) Notes & troubleshooting
+
+	- On first run the SentenceTransformers model may download and can
+		take time depending on network speed.
+	- If you encounter OpenAI client errors mentioning `proxies` or similar,
+		check `openai` and `httpx` versions. The repo expects `openai>=1.0.0`
+		and a compatible `httpx` release (e.g. `httpx>=0.23,<1.0`).
+	- For CI or production, prefer secret managers (Vault, cloud KMS) and
+		persistent vector stores (Milvus, Pinecone, Weaviate) instead of
+		the in-memory FAISS used in the demo.
+
 ✅ What You Have Now
-✔ Real RAG pipeline
-✔ FastAPI backend
-✔ Vector search (FAISS)
-✔ Grounded LLM answers
-✔ Enterprise-ready structure
+- Real RAG pipeline (ingest -> chunk -> embed -> retrieve -> LLM)
+- FastAPI backend with `/upload` and `/ask` endpoints
+- FAISS-based vector search for local experiments
+- Optional LLM backends (OpenAI / Hugging Face)
+
+If you'd like, I can add a short troubleshooting section for Windows
+users or generate a short video/GIF showing upload + ask in the Streamlit
+demo.
