@@ -1,32 +1,76 @@
 
+// Declarative Jenkins pipeline updated for cross-platform compatibility
 pipeline {
     agent any
-    environment { PYTHON_ENV = "venv" }
+    options {
+        // Keep build logs concise and add timestamps
+        timestamps()
+        // Fail the build faster on long-running stalls
+        timeout(time: 60, unit: 'MINUTES')
+    }
+    environment {
+        PYTHON_ENV = "venv"
+    }
     stages {
         stage('Setup') {
             steps {
-                sh 'python -m venv venv'
-                sh './venv/bin/pip install --upgrade pip'
-                sh './venv/bin/pip install -r requirements.txt'
+                script {
+                    if (isUnix()) {
+                        sh 'python3 -m venv ${PYTHON_ENV} || python -m venv ${PYTHON_ENV}'
+                        sh './${PYTHON_ENV}/bin/python -m pip install --upgrade pip'
+                        sh './${PYTHON_ENV}/bin/pip install -r requirements.txt'
+                    } else {
+                        // Windows agent
+                        bat 'python -m venv %PYTHON_ENV%'
+                        bat '%PYTHON_ENV%\\Scripts\\python -m pip install --upgrade pip'
+                        bat '%PYTHON_ENV%\\Scripts\\pip install -r requirements.txt'
+                    }
+                }
             }
         }
+
         stage('Lint & Test') {
             steps {
-                sh './venv/bin/pytest tests/ --maxfail=1 --disable-warnings'
+                script {
+                    if (isUnix()) {
+                        sh './${PYTHON_ENV}/bin/python -m pytest tests/ --maxfail=1 --disable-warnings'
+                    } else {
+                        bat '%PYTHON_ENV%\\Scripts\\python -m pytest tests/ --maxfail=1 --disable-warnings'
+                    }
+                }
             }
         }
+
         stage('Build Docker Image') {
+            when {
+                expression { return isUnix() || env.DOCKER_ON_WINDOWS == 'true' }
+            }
             steps {
-                sh 'docker build -t rag-doc-qa:latest .'
+                script {
+                    if (isUnix()) {
+                        sh 'docker build -t rag-doc-qa:latest .'
+                    } else {
+                        bat 'docker build -t rag-doc-qa:latest .'
+                    }
+                }
             }
         }
+
         stage('Deploy (Optional)') {
-            steps { echo 'Deploy to server or cloud platform' }
+            steps {
+                echo 'Deployment is optional — implement your deployment steps here.'
+            }
         }
     }
     post {
-        always { echo 'Pipeline finished.' }
-        success { echo 'Build succeeded!' }
-        failure { echo 'Build failed!' }
+        always {
+            echo 'Pipeline finished.'
+        }
+        success {
+            echo 'Build succeeded!'
+        }
+        failure {
+            echo 'Build failed!'
+        }
     }
 }
