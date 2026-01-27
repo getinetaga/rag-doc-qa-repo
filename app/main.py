@@ -33,7 +33,6 @@ app = FastAPI(title="RAG Document QA")
 # a scoped dependency-injected object.
 vector_store = None
 
-
 @app.post("/upload")
 async def upload_document(file: UploadFile = File(...)):
     """Upload and process a document.

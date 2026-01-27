@@ -1,6 +1,21 @@
+"""Simple Streamlit dashboard for retrieval evaluation metrics.
+
+This lightweight dashboard visualizes example retrieval metrics such as
+Precision@K and Recall@K and exposes a simple CI/CD-style Quality Gate
+that can be used to fail builds when retrieval quality regresses.
+
+Notes:
+- The file currently contains synthetic/sample data for local exploration.
+    Replace the `Ks`, `precision_scores`, `recall_scores`, and
+    `topk_accuracy` variables with real evaluation outputs in your pipeline.
+- Intended for development and lightweight demos; production monitoring
+    should integrate with log/metrics backends (Prometheus, Grafana, etc.).
+"""
+
 import streamlit as st
 import matplotlib.pyplot as plt
 
+# Page configuration
 st.set_page_config(page_title="RAG Retrieval Metrics", layout="wide")
 st.title("📊 Retrieval Performance Dashboard")
 
