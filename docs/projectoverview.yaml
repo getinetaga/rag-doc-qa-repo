@@ -1,3 +1,65 @@
+project:
+  name: "rag-doc-qa-repo"
+  owner: "getinetaga"
+  branch: "rag"
+  default_branch: "main"
+
+description: >-
+  Retrieval-Augmented Generation (RAG) document QA demo. Upload PDFs,
+  DOCX or TXT documents, build a local FAISS index over chunked
+  embeddings, and generate grounded answers using configurable LLM
+  backends (OpenAI Responses API or Hugging Face Inference API).
+
+features:
+  - "Document ingestion (pdf/docx/txt)"
+  - "Chunking with overlap for retrieval context"
+  - "Local embeddings via SentenceTransformers (all-MiniLM-L6-v2)"
+  - "FAISS in-memory vector index for fast nearest-neighbor search"
+  - "Pluggable LLM providers: OpenAI or Hugging Face"
+  - "Streamlit demo and FastAPI endpoints for upload and ask"
+
+usage:
+  setup:
+    - "python -m venv .venv"
+    - "source .venv/bin/activate  # macOS / Linux"
+    - ".\\.venv\\Scripts\\Activate.ps1  # Windows PowerShell"
+    - "pip install --upgrade pip"
+    - "pip install -r requirements.txt"
+  run_api: "uvicorn app.main:app --reload"
+  run_demo: "streamlit run app/streamlit_demo.py"
+
+config:
+  env_examples:
+    OPENAI_API_KEY: "sk-..."
+    HUGGINGFACE_API_KEY: "hf_..."
+    LLM_PROVIDER: "openai"
+    LLM_MODEL: "gpt-4o-mini"
+
+tests:
+  run: "python -m pytest -q"
+
+ci:
+  pipeline: "Jenkinsfile (cross-platform: installs deps, runs tests, optional Docker build)"
+
+notes:
+  - "app/config.py loads a .env file in repo root if present and does not overwrite existing env vars."
+  - "The SentenceTransformers model downloads on first use; allow time for model fetch."
+  - "For production, replace in-memory FAISS with a persistent vector DB (Milvus, Pinecone, Weaviate)."
+
+files:
+  - "app/main.py"
+  - "app/ingestion.py"
+  - "app/chunking.py"
+  - "app/embeddings.py"
+  - "app/vector_store.py"
+  - "app/rag.py"
+  - "app/streamlit_demo.py"
+  - "docs/architecture.md"
+  - "docs/RunTheApp.txt"
+  - "Jenkinsfile"
+  - "requirements.txt"
+
+contact: "Open issues or PRs on https://github.com/getinetaga/rag-doc-qa-repo"
 
 ---
 
@@ -18,10 +80,4 @@ You now have:
 
 ---
 
-If you want next, I can:
-- Tailor this **specifically to your resume**  
-- Turn it into a **construction / engineering domain version** (fits your background)
-- Create **Jira screenshots or mock boards**
-- Add **evaluation metrics & charts**
-
-Just tell me what you’d like to refine next 🚀
+If you found this project useful, please consider giving it a ⭐ on GitHub! Your support helps me continue creating valuable content. Thank you!
