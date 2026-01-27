@@ -1,1 +1,64 @@
-# Test RAG pipeline placeholder
+"""Tests for the RAG pipeline helpers in `app.rag`.
+
+These tests monkeypatch external dependencies (embeddings and LLM
+providers) to validate that `generate_answer` correctly retrieves context
+from a vector store and forwards prompts to the configured backend.
+"""
+
+import types
+
+import pytest
+
+from app import config, rag
+
+
+class DummyVS:
+    def __init__(self, texts):
+        self._texts = texts
+
+    def search(self, query_embedding, top_k=5):
+        # Return the stored texts up to top_k
+        return self._texts[:top_k]
+
+
+def test_generate_answer_huggingface(monkeypatch):
+    # Patch to use huggingface provider
+    monkeypatch.setattr(config, "LLM_PROVIDER", "huggingface")
+
+    # Fake embed to return a deterministic vector
+    monkeypatch.setattr(rag, "embed_text", lambda texts: [[0.1, 0.2, 0.3]])
+
+    # Fake vector store returns a known context chunk
+    vs = DummyVS(["Context chunk A", "Context chunk B"])
+
+    # Patch _call_huggingface to assert prompt contains the context
+    def fake_hf(model, prompt):
+        assert "Context chunk A" in prompt
+        return "HF_REPLY"
+
+    monkeypatch.setattr(rag, "_call_huggingface", fake_hf)
+
+    out = rag.generate_answer("Tell me about A", vs)
+    assert out == "HF_REPLY"
+
+
+def test_generate_answer_openai(monkeypatch):
+    # Ensure provider is openai for this test
+    monkeypatch.setattr(config, "LLM_PROVIDER", "openai")
+
+    monkeypatch.setattr(rag, "embed_text", lambda texts: [[0.4, 0.5, 0.6]])
+    vs = DummyVS(["Some helpful context."])
+
+    # Create a fake client with a responses.create that returns an object
+    # having `output_text` populated (preferred path in generate_answer)
+    class FakeClient:
+        class responses:
+            @staticmethod
+            def create(model, input, temperature=0):
+                return types.SimpleNamespace(output_text="OPENAI_REPLY")
+
+    monkeypatch.setattr(rag, "_get_openai_client", lambda: FakeClient())
+
+    out = rag.generate_answer("Question?", vs)
+    assert out == "OPENAI_REPLY"
+ 
