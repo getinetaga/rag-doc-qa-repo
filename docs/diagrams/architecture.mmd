@@ -1,0 +1,30 @@
+%% Architecture diagram for rag-doc-qa-repo
+%% Render with Mermaid CLI (mmdc) or VS Code Mermaid Preview
+graph LR
+  subgraph Ingestion
+    A[Document sources\n(pdf / docx / txt)] --> B(ingestion.py)
+    B --> C(chunking.py)
+  end
+
+  subgraph Embedding_Store [Embedding & Store]
+    C --> D(embeddings.py\nSentenceTransformers)
+    D --> E[VectorStore\n(FAISS in vector_store.py)]
+  end
+
+  subgraph RAG
+    E --> F[rag.py\nRetriever + Pipeline]
+    F --> G{LLM Provider}
+    G --> G1[OpenAI Responses API]
+    G --> G2[Hugging Face Inference]
+  end
+
+  subgraph App
+    H[FastAPI endpoints\n(app/main.py)]
+    I[Streamlit demo\n(app/streamlit_demo.py)]
+    H & I --> F
+  end
+
+  style Ingestion fill:#f9f,stroke:#333,stroke-width:1px
+  style Embedding_Store fill:#fffbcc,stroke:#333,stroke-width:1px
+  style RAG fill:#ccf,stroke:#333,stroke-width:1px
+  style App fill:#cfc,stroke:#333,stroke-width:1px

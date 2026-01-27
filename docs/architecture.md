@@ -84,6 +84,28 @@ The FastAPI flow is similar but uses HTTP: User -> FastAPI `/upload`,
 FastAPI runs the same pipeline steps and stores the index in memory for
 the demo.
 
+## Diagrams
+
+- Mermaid sources (editable): [docs/diagrams/architecture.mmd](docs/diagrams/architecture.mmd)
+- Mermaid pipeline source: [docs/diagrams/pipeline.mmd](docs/diagrams/pipeline.mmd)
+
+To render SVG/PNG assets locally, install the Mermaid CLI and run the
+generator script included in the repo:
+
+```bash
+npm install -g @mermaid-js/mermaid-cli
+./scripts/generate_mermaid.sh
+```
+
+Windows PowerShell:
+
+```powershell
+npm install -g @mermaid-js/mermaid-cli
+.\scripts\generate_mermaid.ps1
+```
+
+Generated assets will be placed in `docs/assets/diagrams`.
+
 ## Deployment
 
 - The repository contains a `Dockerfile` to build a container image.

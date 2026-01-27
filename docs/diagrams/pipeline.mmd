@@ -1,0 +1,15 @@
+%% Ingestion + RAG pipeline diagram
+%% Render with Mermaid CLI (mmdc) or VS Code Mermaid Preview
+flowchart TD
+  subgraph Source
+    A[Files: pdf/docx/txt] -->|extract text| B[ingestion.py]
+  end
+  B --> C[chunking.py\n(split into chunks)]
+  C --> D[embeddings.py\n(encode chunks)]
+  D --> E[vector_store.py\n(FAISS index)]
+  E --> F[rag.py\n(retrieve + score)]
+  F --> G[LLM request\n(OpenAI / HF)]
+  G --> H[user-facing app\n(FastAPI / Streamlit)]
+
+  classDef default fill:#fff,stroke:#333;
+  class B,C,D,E,F,G,H default
