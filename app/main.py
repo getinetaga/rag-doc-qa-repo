@@ -18,7 +18,6 @@ from fastapi import FastAPI, File, UploadFile
 
 from .chunking import chunk_text
 from .embeddings import embed_text
-# Pipeline building blocks (local package modules)
 from .ingestion import extract_text
 from .rag import generate_answer
 from .schemas import AnswerResponse, QuestionRequest

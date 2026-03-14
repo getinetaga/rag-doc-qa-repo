@@ -58,6 +58,6 @@ class VectorStore:
         """
 
         q = np.array([query_embedding]).astype("float32")
-        D, I = self.index.search(q, top_k)
+        _, I = self.index.search(q, top_k)
         # I is an (1, top_k) array of indices into self.texts
         return [self.texts[i] for i in I[0]]
