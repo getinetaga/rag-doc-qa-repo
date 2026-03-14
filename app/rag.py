@@ -23,8 +23,7 @@ import os
 import requests
 from openai import OpenAI, OpenAIError
 
-from .config import (HUGGINGFACE_API_KEY, LLM_MODEL, LLM_PROVIDER,
-                                         OPENAI_API_KEY, TOP_K)
+from .config import HUGGINGFACE_API_KEY, LLM_MODEL, LLM_PROVIDER, OPENAI_API_KEY, TOP_K
 from .embeddings import embed_text
 
 _openai_client = None
@@ -150,33 +149,10 @@ Question:
         return _call_huggingface(LLM_MODEL, prompt)
 
     # Default: use OpenAI Responses API (1.x SDK)
-    try:
-        client = _get_openai_client()
-        response = client.responses.create(
-            model=LLM_MODEL,
-            input=prompt,
-            temperature=0
-        )
-
-        # Prefer the convenience property if available
-        if hasattr(response, "output_text") and response.output_text:
-            return response.output_text
-
-        # Fallback: assemble text from structured output
-        outputs = []
-        for item in getattr(response, "output", []) or []:
-            # each item may have a `content` list containing dicts or strings
-            for chunk in item.get("content", []) if isinstance(item, dict) else []:
-                if isinstance(chunk, dict) and "text" in chunk:
-                    outputs.append(chunk["text"])
-                elif isinstance(chunk, str):
-                    outputs.append(chunk)
-
-        if outputs:
-            return "".join(outputs)
-
-        # Last resort: stringify the response
-        return str(response)
-    except Exception:
-        # Surface the error rather than failing silently
-        raise
+    client = _get_openai_client()
+    response = client.responses.create(
+        model=LLM_MODEL,
+        input=prompt,
+        temperature=0
+    )
+    return response.output_text or str(response)
