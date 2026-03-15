@@ -50,12 +50,14 @@ async def upload_document(file: UploadFile = File(...)):
 
     global vector_store
 
-    # Save uploaded file to a local temporary path
+    # Save uploaded file to a local temporary .Where is the file saved? 
+    # It is saved in the current working directory with a name like "temp_<original_filename>".
     file_path = f"temp_{file.filename}"
     with open(file_path, "wb") as f:
         shutil.copyfileobj(file.file, f)
 
-    # Build the retrieval index from the uploaded document
+    # Build the retrieval index from the uploaded document. 
+    # How to access the file? The file is accessed using the `file_path` variable, which points to the temporary file saved on disk.  
     text = extract_text(file_path)
     chunks = chunk_text(text)
     embeddings = embed_text(chunks)
