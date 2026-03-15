@@ -21,14 +21,20 @@ st.title("📊 Retrieval Performance Dashboard")
 
 # -------------------------
 # Sample evaluation results
-# (Replace with real data later)
+# (Replace with real data later),Where to get real data?
+#  You would replace the synthetic/sample data with real evaluation outputs from your retrieval evaluation pipeline.
+#  This could be done by running your evaluation scripts and outputting the metrics to a file (e.g., JSON, CSV) 
+# that this dashboard can read, or by integrating this dashboard directly into your evaluation code to pass the metrics
 # -------------------------
 Ks = [1, 3, 5, 10]
 precision_scores = [0.82, 0.78, 0.74, 0.65]
 recall_scores = [0.40, 0.62, 0.75, 0.88]
 topk_accuracy = 0.92
 
-# Thresholds (CI/CD Quality Gate)
+# Thresholds (CI/CD Quality Gate). Are this thresholds arbitrary? Yes, these thresholds are currently set 
+# to example values (e.g., 0.70 for Precision@5, 0.65 for Recall@5, and 0.90 for Top-5 Accuracy).
+#  You should adjust these thresholds based on the specific requirements and performance characteristics of your application and use case.
+
 PRECISION_THRESHOLD = 0.70
 RECALL_THRESHOLD = 0.65
 TOPK_THRESHOLD = 0.90
@@ -45,7 +51,11 @@ col2.metric("Recall@5", f"{recall_scores[2]:.2f}")
 col3.metric("Top-5 Accuracy", f"{topk_accuracy:.2f}")
 
 # -------------------------
-# Quality Gate
+# Quality Gate. What is a quality gate? A quality gate is a set of conditions or thresholds that must be met 
+# for a software build or deployment to be considered successful. In the context of this dashboard, the quality gate checks 
+# whether the retrieval metrics (Precision@5, Recall@5, and Top-5 Accuracy) meet or exceed predefined thresholds. 
+# If all conditions are satisfied, the gate passes; otherwise, it fails, which can be used to automatically 
+# fail CI/CD builds when retrieval performance regresses.
 # -------------------------
 st.subheader("🚦 CI/CD Retrieval Quality Gate")
 
@@ -59,7 +69,10 @@ else:
     st.error("❌ Retrieval Quality Gate FAILED")
 
 # -------------------------
-# Precision@K Plot
+# Precision@K Plot. What is Precision@K? Precision@K is a metric used to evaluate the performance of 
+# information retrieval systems. It measures the proportion of relevant items among the top K retrieved items. 
+# For example, Precision@5 would calculate how many of the top 5 retrieved items are relevant to the query. 
+# A higher Precision@K indicates that the retrieval system is returning more relevant results within the top K items.
 # -------------------------
 st.subheader("📈 Precision@K vs K")
 
@@ -73,7 +86,8 @@ ax1.grid(True)
 st.pyplot(fig1)
 
 # -------------------------
-# Recall@K Plot
+# Recall@K . how to intergarte in to the dashboard? The Recall@K plot is integrated into the dashboard 
+# as a separate section that visualizes how Recall@K changes with different values of K.
 # -------------------------
 st.subheader("📈 Recall@K vs K")
 
