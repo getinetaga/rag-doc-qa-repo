@@ -133,7 +133,7 @@ def generate_answer(question, vector_store):
 
     context = "\n\n".join(context_chunks)
 
-    prompt = f"""
+    prompt = f""" 
 Answer the question using ONLY the context below.
 If the answer is not found, say "I don't know."
 
@@ -143,7 +143,12 @@ Context:
 Question:
 {question}
 """
-
+# How to us hugging face? The function checks the `LLM_PROVIDER` configuration variable to determine which LLM 
+# provider to use. If `LLM_PROVIDER` is set to "huggingface" (case-insensitive), it calls the `_call_huggingface` 
+# helper function, passing the configured `LLM_MODEL` and the constructed `prompt`. The `_call_huggingface` function 
+# handles the API call to Hugging Face's Inference API and returns the generated text. If `LLM_PROVIDER` is not set 
+# to "huggingface", the function defaults to using the OpenAI Responses API via the `_get_openai_client` helper, 
+# which initializes an OpenAI client and sends a request with the prompt, returning the generated answer.
     if LLM_PROVIDER.lower() == "huggingface":
         # Use the Hugging Face Inference API
         return _call_huggingface(LLM_MODEL, prompt)
