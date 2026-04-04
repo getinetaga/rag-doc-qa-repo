@@ -16,7 +16,7 @@ questions about their content. The primary responsibilities are:
   using an LLM provider (OpenAI or Hugging Face).
 
 Key runtime options:
-- In-process demo (Streamlit) for local experiments.
+- In-process demo (Streamlit) for local experiments. 
 - FastAPI server for programmatic access (endpoints: `/upload`, `/ask`).
 - Pluggable LLM provider via environment configuration (`LLM_PROVIDER`).
 

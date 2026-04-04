@@ -79,3 +79,14 @@ CHUNK_OVERLAP = 100
 
 # Number of top similar chunks to retrieve from the vector store for context.
 TOP_K = 5
+
+# Vector database backend selection.
+# Supported values: 'faiss' (default), 'pgvector', or 'hybrid'.
+VECTOR_DB_BACKEND = os.getenv("VECTOR_DB_BACKEND", "faiss").lower()
+
+# PostgreSQL / pgvector settings used when VECTOR_DB_BACKEND is 'pgvector'
+# or 'hybrid'. Example:
+#   PGVECTOR_DSN=postgresql://postgres:postgres@localhost:5432/ragdb
+PGVECTOR_DSN = os.getenv("PGVECTOR_DSN")
+PGVECTOR_TABLE_NAME = os.getenv("PGVECTOR_TABLE_NAME", "rag_embeddings")
+PGVECTOR_PRIMARY_SEARCH = os.getenv("PGVECTOR_PRIMARY_SEARCH", "pgvector").lower()

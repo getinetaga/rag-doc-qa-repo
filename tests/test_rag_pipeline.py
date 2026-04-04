@@ -61,4 +61,22 @@ def test_generate_answer_openai(monkeypatch):
 
     out = rag.generate_answer("Question?", vs)
     assert out == "OPENAI_REPLY"
+
+
+def test_generate_answer_handles_provider_errors(monkeypatch):
+    monkeypatch.setattr(config, "LLM_PROVIDER", "openai")
+    monkeypatch.setattr(rag, "embed_text", lambda texts: [[0.4, 0.5, 0.6]])
+    vs = DummyVS(["Some helpful context."])
+
+    class FailingClient:
+        class responses:
+            @staticmethod
+            def create(model, input, temperature=0):
+                raise rag.OpenAIError("quota exceeded")
+
+    monkeypatch.setattr(rag, "_get_openai_client", lambda: FailingClient())
+
+    out = rag.generate_answer("Question?", vs)
+    assert "temporarily unavailable" in out.lower()
+    assert "Some helpful context." in out
  

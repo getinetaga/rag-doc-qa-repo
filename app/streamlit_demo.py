@@ -10,7 +10,7 @@ Usage notes:
   want the demo to call an external LLM provider.
 
 The UI is intentionally minimal and uses `st.session_state` to cache the
-in-memory `VectorStore` so you can ask multiple questions without
+configured `VectorStore` so you can ask multiple questions without
 re-indexing.
 """
 
@@ -85,7 +85,9 @@ with col1:
                     # Cleanup temporary file
                     os.remove(tmp.name)
 
-                    st.success("✅ Document processed and indexed locally!")
+                    st.success(
+                        f"✅ Document processed and indexed using `{getattr(vs, 'backend', 'faiss')}`!"
+                    )
                     st.balloons()
                 except Exception as e:
                     # Surface any processing errors to the user
@@ -132,7 +134,8 @@ if st.session_state.chat_history:
 
 with st.sidebar:
     st.header("ℹ️ About this demo")
-    st.write("Runs the pipeline locally: ingestion -> chunking -> embeddings -> FAISS -> LLM generation.")
+    st.write("Runs the pipeline locally: ingestion -> chunking -> embeddings -> vector search (FAISS / pgvector) -> LLM generation.")
+    st.write(f"Vector backend: `{getattr(st.session_state.vector_store, 'backend', 'faiss')}`")
     st.markdown("---")
     st.write("Requirements: the project's Python dependencies must be installed (see requirements.txt).\nIf you use OpenAI or Hugging Face as the LLM backend, set the corresponding API keys in the environment before running the demo.")
     st.markdown("---")
