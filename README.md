@@ -7,6 +7,7 @@ uploaded documents (PDF, DOCX, TXT). It includes:
 - A FastAPI backend exposing `/upload` and `/ask` endpoints.
 - An in-process Streamlit demo for local experimentation.
 - Local embeddings via SentenceTransformers and a FAISS vector index.
+- Optional `pgvector` / PostgreSQL backend for persistent storage or hybrid mirroring.
 - Optional LLM backends: OpenAI (Responses API) or Hugging Face Inference API.
 - Lightweight CI pipeline example in `Jenkinsfile`.
 
@@ -44,11 +45,20 @@ OPENAI_API_KEY="sk-..."
 HUGGINGFACE_API_KEY="hf_..."
 LLM_PROVIDER=openai       # or huggingface
 LLM_MODEL=gpt-4o-mini     # change to the model you want to use
+VECTOR_DB_BACKEND=faiss   # faiss, pgvector, or hybrid
+PGVECTOR_DSN=postgresql://postgres:postgres@localhost:5432/ragdb
+PGVECTOR_TABLE_NAME=rag_embeddings
 ```
 
 The project includes a lightweight `.env` loader in [app/config.py](app/config.py) that will populate environment variables if they are not already set. Do NOT commit real secrets.
 
-4. Run the FastAPI server
+4. Initialize the pgvector table (optional, only if using `pgvector` or `hybrid`)
+
+```bash
+psql "$PGVECTOR_DSN" -f scripts/create_pgvector_table.sql
+```
+
+5. Run the FastAPI server
 
 ```bash
 uvicorn app.main:app --reload

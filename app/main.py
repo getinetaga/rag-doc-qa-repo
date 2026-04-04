@@ -3,7 +3,7 @@ document question-answering pipeline.
 
 Endpoints:
 - POST /upload : Accepts a file upload, extracts text, chunks it, embeds chunks and
-  stores them in an in-memory vector store for later retrieval.
+  stores them in the configured vector store for later retrieval.
 - POST /ask    : Accepts a question and returns an answer generated using the
   previously built vector store.
 
@@ -26,10 +26,10 @@ from .vector_store import VectorStore
 # Initialize FastAPI application
 app = FastAPI(title="RAG Document QA")
 
-# A simple in-memory reference to a VectorStore instance. It is created when
-# a document is uploaded and kept in module scope for subsequent /ask calls.
-# In a production system this would be replaced with a persistent store or
-# a scoped dependency-injected object.
+# A module-level reference to the currently active VectorStore instance. It is
+# created when a document is uploaded and kept in module scope for subsequent
+# /ask calls. Depending on configuration it can use FAISS, pgvector, or a
+# hybrid combination of both.
 vector_store = None
 
 @app.post("/upload")

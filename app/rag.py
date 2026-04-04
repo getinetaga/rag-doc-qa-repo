@@ -11,6 +11,9 @@ Behavior:
     `vector_store`, constructs a prompt that instructs the LLM to answer
     using only the provided context, and then calls the configured LLM
     provider to generate a response.
+- If the external LLM provider is unavailable (for example missing API
+    credentials, rate limiting, or service/network errors), a friendly
+    fallback answer is returned instead of crashing the API endpoint.
 
 Notes:
 - OpenAI client initialization is lazy to avoid import-time failures when
@@ -18,12 +21,10 @@ Notes:
     client is first used and the API key is missing.
 """
 
-import os
-
 import requests
 from openai import OpenAI, OpenAIError
 
-from .config import HUGGINGFACE_API_KEY, LLM_MODEL, LLM_PROVIDER, OPENAI_API_KEY, TOP_K
+from . import config
 from .embeddings import embed_text
 
 _openai_client = None
@@ -41,8 +42,8 @@ def _get_openai_client():
         return _openai_client
 
     try:
-        if OPENAI_API_KEY:
-            _openai_client = OpenAI(api_key=OPENAI_API_KEY)
+        if config.OPENAI_API_KEY:
+            _openai_client = OpenAI(api_key=config.OPENAI_API_KEY)
         else:
             # Let the SDK pick up the key from environment variables if set;
             # this will raise OpenAIError if no key is available when used.
@@ -70,11 +71,11 @@ def _call_huggingface(model: str, prompt: str) -> str:
         requests.HTTPError: for non-2xx HTTP responses.
     """
 
-    if not HUGGINGFACE_API_KEY:
+    if not config.HUGGINGFACE_API_KEY:
         raise ValueError("HUGGINGFACE_API_KEY is not set in environment")
 
     url = f"https://api-inference.huggingface.co/models/{model}"
-    headers = {"Authorization": f"Bearer {HUGGINGFACE_API_KEY}"}
+    headers = {"Authorization": f"Bearer {config.HUGGINGFACE_API_KEY}"}
     payload = {"inputs": prompt, "parameters": {"max_new_tokens": 512}}
 
     resp = requests.post(url, headers=headers, json=payload, timeout=30)
@@ -101,6 +102,24 @@ def _call_huggingface(model: str, prompt: str) -> str:
     return str(data)
 
 
+def _provider_error_answer(context_chunks, exc: Exception) -> str:
+    """Return a user-friendly fallback when the LLM provider is unavailable."""
+
+    preview_items = []
+    for chunk in context_chunks[:3]:
+        cleaned = " ".join(str(chunk).split())
+        if cleaned:
+            preview_items.append(f"- {cleaned[:220]}")
+
+    preview = "\n".join(preview_items) or "- No context was retrieved from the document."
+    return (
+        "The configured LLM provider is temporarily unavailable, so I couldn't "
+        f"generate a final answer right now ({exc}).\n\n"
+        "Relevant retrieved context:\n"
+        f"{preview}"
+    )
+
+
 def generate_answer(question, vector_store):
     """Generate an answer for `question` using `vector_store` as context.
 
@@ -122,14 +141,10 @@ def generate_answer(question, vector_store):
         A string containing the model's answer. If the model cannot find the
         answer in the context, it should respond with "I don't know." as
         instructed in the prompt.
-
-    Raises:
-        Any exceptions raised by the underlying embedding/model APIs will
-        propagate to the caller.
     """
 
     query_embedding = embed_text([question])[0]
-    context_chunks = vector_store.search(query_embedding, TOP_K)
+    context_chunks = vector_store.search(query_embedding, config.TOP_K)
 
     context = "\n\n".join(context_chunks)
 
@@ -143,21 +158,17 @@ Context:
 Question:
 {question}
 """
-# How to us hugging face? The function checks the `LLM_PROVIDER` configuration variable to determine which LLM 
-# provider to use. If `LLM_PROVIDER` is set to "huggingface" (case-insensitive), it calls the `_call_huggingface` 
-# helper function, passing the configured `LLM_MODEL` and the constructed `prompt`. The `_call_huggingface` function 
-# handles the API call to Hugging Face's Inference API and returns the generated text. If `LLM_PROVIDER` is not set 
-# to "huggingface", the function defaults to using the OpenAI Responses API via the `_get_openai_client` helper, 
-# which initializes an OpenAI client and sends a request with the prompt, returning the generated answer.
-    if LLM_PROVIDER.lower() == "huggingface":
-        # Use the Hugging Face Inference API
-        return _call_huggingface(LLM_MODEL, prompt)
 
-    # Default: use OpenAI Responses API (1.x SDK)
-    client = _get_openai_client()
-    response = client.responses.create(
-        model=LLM_MODEL,
-        input=prompt,
-        temperature=0
-    )
-    return response.output_text or str(response)
+    try:
+        if config.LLM_PROVIDER.lower() == "huggingface":
+            return _call_huggingface(config.LLM_MODEL, prompt)
+
+        client = _get_openai_client()
+        response = client.responses.create(
+            model=config.LLM_MODEL,
+            input=prompt,
+            temperature=0,
+        )
+        return response.output_text or str(response)
+    except (OpenAIError, requests.RequestException, RuntimeError, ValueError) as exc:
+        return _provider_error_answer(context_chunks, exc)
