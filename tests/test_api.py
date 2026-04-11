@@ -80,6 +80,11 @@ def test_upload_and_ask(monkeypatch):
 	class FakeVectorStore:
 		def __init__(self, dim):
 			self.texts = []
+			self.clear_called = False
+
+		def clear(self):
+			self.clear_called = True
+			self.texts = []
 
 		def add(self, embeddings, texts):
 			self.texts.extend(texts)
@@ -102,6 +107,7 @@ def test_upload_and_ask(monkeypatch):
 	r = client.post("/upload", files=files)
 	assert r.status_code == 200
 	assert r.json().get("message") == "Document processed successfully"
+	assert main.vector_store.clear_called is True
 
 	# Ask a question and verify the fake generator is invoked
 	r2 = client.post("/ask", json={"question": "What is this?"})

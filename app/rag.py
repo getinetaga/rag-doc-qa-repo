@@ -131,22 +131,63 @@ def _append_references(answer: str, context_chunks) -> str:
     return f"{answer.rstrip()}\n\nReferences: {formatted}"
 
 
-def _provider_error_answer(context_chunks, exc: Exception) -> str:
-    """Return a user-friendly fallback when the LLM provider is unavailable."""
+def _dedupe_chunks(context_chunks) -> list[str]:
+    """Remove repeated retrieved chunks while preserving order."""
 
-    preview_items = []
-    for chunk in context_chunks[:3]:
+    unique: list[str] = []
+    seen: set[str] = set()
+    for chunk in context_chunks:
         cleaned = " ".join(str(chunk).split())
-        if cleaned:
-            preview_items.append(f"- {cleaned[:220]}")
+        if not cleaned or cleaned in seen:
+            continue
+        seen.add(cleaned)
+        unique.append(str(chunk))
+    return unique
 
-    preview = "\n".join(preview_items) or "- No context was retrieved from the document."
-    return (
-        "The configured LLM provider is temporarily unavailable, so I couldn't "
-        f"generate a final answer right now ({exc}).\n\n"
-        "Relevant retrieved context:\n"
-        f"{preview}"
-    )
+
+def _strip_section_label(text: str) -> str:
+    """Remove a leading bracketed section label from chunk text."""
+
+    return re.sub(r"^\[[^\]]+\]\s*", "", text).strip()
+
+
+def _provider_error_answer(question: str, context_chunks, exc: Exception) -> str:
+    """Build a concise document-grounded answer when the LLM is unavailable."""
+
+    del exc  # The user-facing answer should stay focused on the document.
+
+    context_chunks = _dedupe_chunks(context_chunks)
+    if not context_chunks:
+        return "I don't know."
+
+    terms = {
+        token
+        for token in re.findall(r"[A-Za-z0-9']+", question.lower())
+        if len(token) > 2 and token not in {"what", "which", "where", "when", "with", "from", "that", "this", "about", "document"}
+    }
+
+    best_sentence = ""
+    best_score = -1
+    for chunk in context_chunks:
+        clean_chunk = _strip_section_label(str(chunk))
+        sentences = [
+            sentence.strip()
+            for sentence in re.split(r"(?<=[.!?])\s+", clean_chunk)
+            if sentence.strip()
+        ] or [clean_chunk]
+
+        for index, sentence in enumerate(sentences):
+            sentence_terms = set(re.findall(r"[A-Za-z0-9']+", sentence.lower()))
+            overlap = len(sentence_terms & terms)
+            score = overlap * 10 - index
+            if score > best_score:
+                best_score = score
+                best_sentence = sentence
+
+    if not best_sentence:
+        best_sentence = _strip_section_label(str(context_chunks[0]))
+
+    return best_sentence
 
 
 def generate_answer(question, vector_store):
@@ -173,7 +214,7 @@ def generate_answer(question, vector_store):
     """
 
     query_embedding = embed_text([question])[0]
-    context_chunks = vector_store.search(query_embedding, config.TOP_K)
+    context_chunks = _dedupe_chunks(vector_store.search(query_embedding, config.TOP_K))
 
     context = "\n\n".join(context_chunks)
 
@@ -204,4 +245,4 @@ Question:
         answer = response.output_text or str(response)
         return _append_references(answer, context_chunks)
     except (OpenAIError, requests.RequestException, RuntimeError, ValueError) as exc:
-        return _append_references(_provider_error_answer(context_chunks, exc), context_chunks)
+        return _append_references(_provider_error_answer(question, context_chunks, exc), context_chunks)
