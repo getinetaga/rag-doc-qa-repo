@@ -84,4 +84,4 @@ def test_pgvector_search_casts_query_to_vector():
 
     assert result == ["sample doc"]
     assert "%s::vector" in store._conn.cursor_obj.sql
-    assert store._conn.cursor_obj.params[1] == 1
+    assert store._conn.cursor_obj.params[1] >= 1

@@ -38,6 +38,20 @@ def _safe_identifier(value: str) -> str:
     return value
 
 
+def _dedupe_texts(texts) -> list[str]:
+    """Remove duplicate text results while preserving order."""
+
+    unique: list[str] = []
+    seen: set[str] = set()
+    for text in texts:
+        value = str(text)
+        if value in seen:
+            continue
+        seen.add(value)
+        unique.append(value)
+    return unique
+
+
 class FaissVectorStore:
     """FAISS-backed in-memory vector store."""
 
@@ -59,9 +73,15 @@ class FaissVectorStore:
             return []
 
         limit = max(1, min(int(top_k), len(self.texts)))
+        search_limit = max(limit, min(len(self.texts), limit * 5))
         q = np.asarray([query_embedding], dtype="float32")
-        _, indices = self.index.search(q, limit)
-        return [self.texts[i] for i in indices[0] if 0 <= i < len(self.texts)]
+        _, indices = self.index.search(q, search_limit)
+        results = [self.texts[i] for i in indices[0] if 0 <= i < len(self.texts)]
+        return _dedupe_texts(results)[:limit]
+
+    def clear(self):
+        self.index = faiss.IndexFlatL2(self.dim)
+        self.texts = []
 
 
 class PGVectorStore:
@@ -141,6 +161,7 @@ class PGVectorStore:
 
     def search(self, query_embedding, top_k=5):
         limit = max(1, int(top_k))
+        query_limit = max(limit, limit * 5)
         query_vector = np.asarray(query_embedding, dtype="float32").tolist()
 
         with self._conn.cursor() as cur:
@@ -151,9 +172,15 @@ class PGVectorStore:
                 ORDER BY embedding <-> %s::vector
                 LIMIT %s
                 """,
-                (query_vector, limit),
+                (query_vector, query_limit),
             )
-            return [row[0] for row in cur.fetchall()]
+            rows = [row[0] for row in cur.fetchall()]
+            return _dedupe_texts(rows)[:limit]
+
+    def clear(self):
+        with self._conn.cursor() as cur:
+            cur.execute(f"DELETE FROM {self.table_name}")
+        self._conn.commit()
 
     def close(self):
         if getattr(self, "_conn", None) is not None:
@@ -229,6 +256,11 @@ class VectorStore:
 
     def search(self, query_embedding, top_k=5):
         return self._store.search(query_embedding, top_k=top_k)
+
+    def clear(self):
+        clear = getattr(self._store, "clear", None)
+        if callable(clear):
+            clear()
 
     def close(self):
         close = getattr(self._store, "close", None)

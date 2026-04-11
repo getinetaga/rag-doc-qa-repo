@@ -77,8 +77,8 @@ def test_generate_answer_handles_provider_errors(monkeypatch):
     monkeypatch.setattr(rag, "_get_openai_client", lambda: FailingClient())
 
     out = rag.generate_answer("Question?", vs)
-    assert "temporarily unavailable" in out.lower()
     assert "Some helpful context." in out
+    assert "temporarily unavailable" not in out.lower()
 
 
 def test_generate_answer_appends_section_references(monkeypatch):
@@ -102,3 +102,28 @@ def test_generate_answer_appends_section_references(monkeypatch):
     assert "References:" in out
     assert "Section 1: Introduction" in out
     assert "Section 2: Summary" in out
+
+
+def test_generate_answer_fallback_is_clear_and_deduplicated(monkeypatch):
+    monkeypatch.setattr(config, "LLM_PROVIDER", "openai")
+    monkeypatch.setattr(rag, "embed_text", lambda texts: [[0.9, 0.1, 0.2]])
+    vs = DummyVS([
+        "[Section 1: Introduction] Python is the main topic.",
+        "[Section 1: Introduction] Python is the main topic.",
+        "[Section 2: Benefits] Python is used for APIs and data analysis.",
+    ])
+
+    class FailingClient:
+        class responses:
+            @staticmethod
+            def create(model, input, temperature=0):
+                raise rag.OpenAIError("quota exceeded")
+
+    monkeypatch.setattr(rag, "_get_openai_client", lambda: FailingClient())
+
+    out = rag.generate_answer("What is the document about?", vs)
+    assert "Python is the main topic." in out
+    assert out.count("Python is the main topic.") == 1
+    assert "temporarily unavailable" not in out.lower()
+    assert "References:" in out
+    assert "Section 1: Introduction" in out

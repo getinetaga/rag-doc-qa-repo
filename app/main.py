@@ -62,8 +62,12 @@ async def upload_document(file: UploadFile = File(...)):
     chunks = chunk_text(text)
     embeddings = embed_text(chunks)
 
-    # Initialize vector store with the embedding dimensionality and add data
+    # Initialize the vector store for the current upload and replace any
+    # previous persisted document chunks so answers stay focused and don't repeat.
     vector_store = VectorStore(dim=len(embeddings[0]))
+    clear = getattr(vector_store, "clear", None)
+    if callable(clear):
+        clear()
     vector_store.add(embeddings, chunks)
 
     # Clean up the temporary file
