@@ -79,4 +79,26 @@ def test_generate_answer_handles_provider_errors(monkeypatch):
     out = rag.generate_answer("Question?", vs)
     assert "temporarily unavailable" in out.lower()
     assert "Some helpful context." in out
- 
+
+
+def test_generate_answer_appends_section_references(monkeypatch):
+    monkeypatch.setattr(config, "LLM_PROVIDER", "openai")
+    monkeypatch.setattr(rag, "embed_text", lambda texts: [[0.7, 0.8, 0.9]])
+    vs = DummyVS([
+        "[Section 1: Introduction] Python is the main topic.",
+        "[Section 2: Summary] The document wraps up the overview.",
+    ])
+
+    class FakeClient:
+        class responses:
+            @staticmethod
+            def create(model, input, temperature=0):
+                return types.SimpleNamespace(output_text="Python is the main topic.")
+
+    monkeypatch.setattr(rag, "_get_openai_client", lambda: FakeClient())
+
+    out = rag.generate_answer("What is the document about?", vs)
+    assert "Python is the main topic." in out
+    assert "References:" in out
+    assert "Section 1: Introduction" in out
+    assert "Section 2: Summary" in out

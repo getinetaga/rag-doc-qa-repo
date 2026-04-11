@@ -148,7 +148,7 @@ class PGVectorStore:
                 f"""
                 SELECT text
                 FROM {self.table_name}
-                ORDER BY embedding <-> %s
+                ORDER BY embedding <-> %s::vector
                 LIMIT %s
                 """,
                 (query_vector, limit),

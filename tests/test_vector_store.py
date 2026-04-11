@@ -46,3 +46,42 @@ def test_vector_store_hybrid_mode_uses_pgvector_as_primary(monkeypatch):
     store.add([[0.1, 0.2, 0.3]], ["hybrid doc"])
 
     assert store.search([0.1, 0.2, 0.3], top_k=1) == ["hybrid doc"]
+
+
+class _RecordingCursor:
+    def __init__(self):
+        self.sql = None
+        self.params = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def execute(self, sql, params):
+        self.sql = sql
+        self.params = params
+
+    def fetchall(self):
+        return [("sample doc",)]
+
+
+class _RecordingConnection:
+    def __init__(self):
+        self.cursor_obj = _RecordingCursor()
+
+    def cursor(self):
+        return self.cursor_obj
+
+
+def test_pgvector_search_casts_query_to_vector():
+    store = vector_store.PGVectorStore.__new__(vector_store.PGVectorStore)
+    store.table_name = "rag_embeddings"
+    store._conn = _RecordingConnection()
+
+    result = store.search([0.1, 0.2, 0.3], top_k=1)
+
+    assert result == ["sample doc"]
+    assert "%s::vector" in store._conn.cursor_obj.sql
+    assert store._conn.cursor_obj.params[1] == 1
