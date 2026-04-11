@@ -14,12 +14,16 @@ Behavior:
 - If the external LLM provider is unavailable (for example missing API
     credentials, rate limiting, or service/network errors), a friendly
     fallback answer is returned instead of crashing the API endpoint.
+- Returned answers include a short `References:` line so the UI can show
+    which section(s) of the document support the answer.
 
 Notes:
 - OpenAI client initialization is lazy to avoid import-time failures when
     `OPENAI_API_KEY` is not yet available. A clear error is raised when the
     client is first used and the API key is missing.
 """
+
+import re
 
 import requests
 from openai import OpenAI, OpenAIError
@@ -102,6 +106,31 @@ def _call_huggingface(model: str, prompt: str) -> str:
     return str(data)
 
 
+def _extract_section_references(context_chunks) -> list[str]:
+    """Extract unique bracketed section labels from retrieved chunks."""
+
+    references: list[str] = []
+    for chunk in context_chunks:
+        match = re.match(r"\[([^\]]+)\]", str(chunk).strip())
+        if not match:
+            continue
+        label = match.group(1).strip()
+        if label and label not in references:
+            references.append(label)
+    return references
+
+
+def _append_references(answer: str, context_chunks) -> str:
+    """Append a `References:` line when section labels are available."""
+
+    refs = _extract_section_references(context_chunks)
+    if not refs or "references:" in answer.lower():
+        return answer
+
+    formatted = "; ".join(f"[{ref}]" for ref in refs)
+    return f"{answer.rstrip()}\n\nReferences: {formatted}"
+
+
 def _provider_error_answer(context_chunks, exc: Exception) -> str:
     """Return a user-friendly fallback when the LLM provider is unavailable."""
 
@@ -151,6 +180,8 @@ def generate_answer(question, vector_store):
     prompt = f""" 
 Answer the question using ONLY the context below.
 If the answer is not found, say "I don't know."
+At the end of the answer, include a `References:` line citing the relevant
+bracketed section labels from the context.
 
 Context:
 {context}
@@ -161,7 +192,8 @@ Question:
 
     try:
         if config.LLM_PROVIDER.lower() == "huggingface":
-            return _call_huggingface(config.LLM_MODEL, prompt)
+            answer = _call_huggingface(config.LLM_MODEL, prompt)
+            return _append_references(answer, context_chunks)
 
         client = _get_openai_client()
         response = client.responses.create(
@@ -169,6 +201,7 @@ Question:
             input=prompt,
             temperature=0,
         )
-        return response.output_text or str(response)
+        answer = response.output_text or str(response)
+        return _append_references(answer, context_chunks)
     except (OpenAIError, requests.RequestException, RuntimeError, ValueError) as exc:
-        return _provider_error_answer(context_chunks, exc)
+        return _append_references(_provider_error_answer(context_chunks, exc), context_chunks)
