@@ -63,14 +63,27 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 # local SentenceTransformer this value will be used).
 EMBEDDING_MODEL = "text-embedding-3-small"
 
-# LLM model name used with the configured provider. Update as needed.
-LLM_MODEL = "gpt-4o-mini"
-
-# Provider for LLMs: 'openai' or 'huggingface' (default: openai)
-LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openai")
+# Provider for LLMs: 'openai', 'huggingface', or 'auto' (default: openai)
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openai").lower()
 
 # Optional Hugging Face Inference API key (used when LLM_PROVIDER == 'huggingface')
-HUGGINGFACE_API_KEY = os.getenv("HUGGINGFACE_API_KEY")
+HUGGINGFACE_API_KEY = (
+	os.getenv("HUGGINGFACE_API_KEY")
+	or os.getenv("HF_TOKEN")
+	or os.getenv("HUGGINGFACEHUB_API_TOKEN")
+)
+
+# Provider-specific model names.
+# LLM_MODEL remains as backward-compatible alias and provider-specific default.
+OPENAI_LLM_MODEL = os.getenv("OPENAI_LLM_MODEL", os.getenv("LLM_MODEL", "gpt-4o-mini"))
+HUGGINGFACE_LLM_MODEL = os.getenv(
+	"HUGGINGFACE_LLM_MODEL", os.getenv("LLM_MODEL", "google/flan-t5-base")
+)
+
+if LLM_PROVIDER == "huggingface":
+	LLM_MODEL = HUGGINGFACE_LLM_MODEL
+else:
+	LLM_MODEL = OPENAI_LLM_MODEL
 
 # Chunking controls: number of characters per chunk and overlap in characters.
 # These are used by `app/chunking.py` to split documents into retrievable pieces.
