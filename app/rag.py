@@ -24,6 +24,7 @@ Notes:
 """
 
 import re
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
 import requests
 from openai import OpenAI, OpenAIError
@@ -80,7 +81,11 @@ def _call_huggingface(model: str, prompt: str) -> str:
 
     url = f"https://api-inference.huggingface.co/models/{model}"
     headers = {"Authorization": f"Bearer {config.HUGGINGFACE_API_KEY}"}
-    payload = {"inputs": prompt, "parameters": {"max_new_tokens": 512}}
+    payload = {
+        "inputs": prompt,
+        "parameters": {"max_new_tokens": 512, "return_full_text": False},
+        "options": {"wait_for_model": True},
+    }
 
     resp = requests.post(url, headers=headers, json=payload, timeout=30)
     resp.raise_for_status()
@@ -94,16 +99,72 @@ def _call_huggingface(model: str, prompt: str) -> str:
         # Typical text-generation response: [{'generated_text': '...'}]
         first = data[0]
         if isinstance(first, dict) and "generated_text" in first:
-            return first["generated_text"]
+            text = str(first["generated_text"])
+            # Some text-generation models may still echo the prompt.
+            if text.startswith(prompt):
+                text = text[len(prompt):]
+            return text.strip()
         # Some models return a plain string in first element
         if isinstance(first, str):
-            return first
+            text = first
+            if text.startswith(prompt):
+                text = text[len(prompt):]
+            return text.strip()
 
     if isinstance(data, dict) and "generated_text" in data:
-        return data["generated_text"]
+        text = str(data["generated_text"])
+        if text.startswith(prompt):
+            text = text[len(prompt):]
+        return text.strip()
 
     # Fallback to string conversion
     return str(data)
+
+
+def _call_openai(model: str, prompt: str) -> str:
+    """Call OpenAI Responses API and return generated text."""
+
+    client = _get_openai_client()
+    response = client.responses.create(
+        model=model,
+        input=prompt,
+        temperature=0,
+    )
+    return response.output_text or str(response)
+
+
+def _call_fastest_provider(prompt: str) -> str:
+    """Return the first successful response from OpenAI or Hugging Face.
+
+    Raises:
+        RuntimeError: if neither provider returns a valid response.
+    """
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = {
+            "openai": executor.submit(_call_openai, config.OPENAI_LLM_MODEL, prompt),
+            "huggingface": executor.submit(_call_huggingface, config.HUGGINGFACE_LLM_MODEL, prompt),
+        }
+
+        pending = set(futures.values())
+        errors: list[str] = []
+
+        while pending:
+            done, pending = wait(pending, return_when=FIRST_COMPLETED)
+            for future in done:
+                provider_name = next(name for name, task in futures.items() if task is future)
+                try:
+                    result = future.result()
+                    if result and str(result).strip():
+                        for other in pending:
+                            other.cancel()
+                        return str(result)
+                    errors.append(f"{provider_name}: empty response")
+                except (OpenAIError, requests.RequestException, RuntimeError, ValueError) as exc:
+                    errors.append(f"{provider_name}: {exc}")
+
+    detail = "; ".join(errors) if errors else "both providers failed"
+    raise RuntimeError(f"Automatic provider mode failed ({detail})")
 
 
 def _extract_section_references(context_chunks) -> list[str]:
@@ -232,17 +293,15 @@ Question:
 """
 
     try:
-        if config.LLM_PROVIDER.lower() == "huggingface":
-            answer = _call_huggingface(config.LLM_MODEL, prompt)
+        if config.LLM_PROVIDER == "huggingface":
+            answer = _call_huggingface(config.HUGGINGFACE_LLM_MODEL, prompt)
             return _append_references(answer, context_chunks)
 
-        client = _get_openai_client()
-        response = client.responses.create(
-            model=config.LLM_MODEL,
-            input=prompt,
-            temperature=0,
-        )
-        answer = response.output_text or str(response)
+        if config.LLM_PROVIDER == "auto":
+            answer = _call_fastest_provider(prompt)
+            return _append_references(answer, context_chunks)
+
+        answer = _call_openai(config.OPENAI_LLM_MODEL, prompt)
         return _append_references(answer, context_chunks)
     except (OpenAIError, requests.RequestException, RuntimeError, ValueError) as exc:
         return _append_references(_provider_error_answer(question, context_chunks, exc), context_chunks)
