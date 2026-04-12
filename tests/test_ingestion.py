@@ -50,3 +50,50 @@ def test_extract_unsupported_extension(tmp_path: Path):
         assert "Unsupported file type" in str(e)
     else:
         raise AssertionError("Expected ValueError for unsupported extension")
+
+
+def test_extract_pdf_with_mocked_pdfplumber(monkeypatch, tmp_path: Path):
+    p = tmp_path / "sample.pdf"
+    p.write_bytes(b"%PDF-1.4\n%fake")
+
+    class _Page:
+        def __init__(self, text):
+            self._text = text
+
+        def extract_text(self):
+            return self._text
+
+    class _PDF:
+        def __init__(self):
+            self.pages = [_Page("Page 1 text"), _Page(None), _Page("Page 3 text")]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    def fake_open(path):
+        assert str(path).endswith("sample.pdf")
+        return _PDF()
+
+    monkeypatch.setattr("app.ingestion.pdfplumber.open", fake_open)
+
+    out = extract_text(str(p))
+    assert "Page 1 text" in out
+    assert "Page 3 text" in out
+    assert "None" not in out
+
+
+def test_extract_txt_latin1_fallback(tmp_path: Path):
+    p = tmp_path / "latin1.txt"
+    p.write_bytes("cafe\xe9".encode("latin-1"))
+
+    out = extract_text(str(p))
+    assert out == "cafeé"
+
+
+def test_extract_missing_file_raises_file_not_found(tmp_path: Path):
+    missing = tmp_path / "does_not_exist.txt"
+    with pytest.raises(FileNotFoundError):
+        extract_text(str(missing))

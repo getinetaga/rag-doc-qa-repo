@@ -113,3 +113,9 @@ def test_upload_and_ask(monkeypatch):
 	r2 = client.post("/ask", json={"question": "What is this?"})
 	assert r2.status_code == 200
 	assert r2.json().get("answer") == "FAKE ANSWER: What is this?"
+
+
+def test_upload_unsupported_file_type_returns_server_error():
+	files = {"file": ("data.bin", b"\x00\x01", "application/octet-stream")}
+	with pytest.raises(ValueError, match="Unsupported file type"):
+		client.post("/upload", files=files)

@@ -11,6 +11,7 @@ It supports:
 - a **Streamlit frontend** for local user interaction
 - **FAISS** or **pgvector/PostgreSQL** for vector search
 - **OpenAI** or **Hugging Face** for answer generation
+- **python-pptx** for automated capstone presentation generation
 
 ## App Visualization
 
@@ -61,6 +62,7 @@ flowchart LR
 | **NumPy** | Numerical operations for embedding/vector handling |
 | **Requests** | HTTP calls to external model APIs |
 | **python-multipart** | Supports file uploads through FastAPI |
+| **python-pptx** | Programmatic creation and update of PPTX presentation files |
 
 ## Testing and Quality
 
@@ -68,6 +70,7 @@ flowchart LR
 |---|---|
 | **pytest** | Unit and integration testing |
 | **fastapi.testclient** | API endpoint testing |
+| **pytest monkeypatch** | Isolation of heavy/model/network operations during tests |
 
 ## DevOps and Tooling
 
@@ -75,6 +78,7 @@ flowchart LR
 |---|---|
 | **Docker** | Containerizing the application |
 | **Jenkins** | CI pipeline for install, test, and build workflows |
+| **GitHub Actions** | Docker image CI workflow for branch and PR validation |
 | **Mermaid** | Architecture and pipeline diagrams in project docs |
 | **Git / GitHub** | Version control and remote collaboration |
 
@@ -85,4 +89,5 @@ The project combines:
 - **Interactive UI** with Streamlit
 - **RAG and vector search** using SentenceTransformers, FAISS, and pgvector
 - **Optional LLM integration** through OpenAI or Hugging Face
-- **Testing and CI/CD** using pytest, Docker, and Jenkins
+- **Testing and CI/CD** using pytest, Docker, Jenkins, and GitHub Actions
+- **Presentation automation** using python-pptx
