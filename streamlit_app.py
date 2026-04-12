@@ -52,6 +52,10 @@ st.markdown("---")
 # Initialize session state
 if 'document_uploaded' not in st.session_state:
     st.session_state.document_uploaded = False
+if 'document_name' not in st.session_state:
+    st.session_state.document_name = ""
+if 'document_size_kb' not in st.session_state:
+    st.session_state.document_size_kb = 0.0
 if 'chat_history' not in st.session_state:
     st.session_state.chat_history = []
 
@@ -82,6 +86,8 @@ with col1:
                     
                     if response.status_code == 200:
                         st.session_state.document_uploaded = True
+                        st.session_state.document_name = uploaded_file.name
+                        st.session_state.document_size_kb = uploaded_file.size / 1024
                         st.session_state.chat_history = []
                         st.success("✅ Document processed successfully!")
                         st.balloons()
@@ -184,6 +190,14 @@ with st.sidebar:
         st.success("✅ Document: Loaded")
     else:
         st.warning("⚠️ Document: Not loaded")
+
+    st.markdown("---")
+    st.header("📄 Document")
+    if st.session_state.document_uploaded and st.session_state.document_name:
+        st.write(f"**Name:** {st.session_state.document_name}")
+        st.write(f"**Size:** {st.session_state.document_size_kb:.2f} KB")
+    else:
+        st.caption("No document loaded")
     
     st.markdown("---")
     st.info("💡 **Tip:** Ask specific questions about the content of your uploaded document for best results!")
