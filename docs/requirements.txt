@@ -7,4 +7,5 @@ faiss-cpu
 sentence-transformers
 pdfplumber
 python-docx
+python-pptx
 numpy
