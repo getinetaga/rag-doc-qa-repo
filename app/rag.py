@@ -23,7 +23,9 @@ Notes:
     client is first used and the API key is missing.
 """
 
+import logging
 import re
+import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
 import requests
@@ -31,6 +33,8 @@ from openai import OpenAI, OpenAIError
 
 from . import config
 from .embeddings import embed_text
+
+logger = logging.getLogger(__name__)
 
 _openai_client = None
 
@@ -292,16 +296,29 @@ Question:
 {question}
 """
 
+    logger.info(
+        "Generating answer — provider: %s | %d context chunks",
+        config.LLM_PROVIDER,
+        len(context_chunks),
+    )
+    _t0 = time.monotonic()
     try:
         if config.LLM_PROVIDER == "huggingface":
             answer = _call_huggingface(config.HUGGINGFACE_LLM_MODEL, prompt)
+            logger.info("Answer generated via huggingface in %.2fs.", time.monotonic() - _t0)
             return _append_references(answer, context_chunks)
 
         if config.LLM_PROVIDER == "auto":
             answer = _call_fastest_provider(prompt)
+            logger.info("Answer generated via auto-provider in %.2fs.", time.monotonic() - _t0)
             return _append_references(answer, context_chunks)
 
         answer = _call_openai(config.OPENAI_LLM_MODEL, prompt)
+        logger.info("Answer generated via openai in %.2fs.", time.monotonic() - _t0)
         return _append_references(answer, context_chunks)
     except (OpenAIError, requests.RequestException, RuntimeError, ValueError) as exc:
+        logger.warning(
+            "LLM provider failed (%.2fs): %s — using fallback answer.",
+            time.monotonic() - _t0, exc,
+        )
         return _append_references(_provider_error_answer(question, context_chunks, exc), context_chunks)

@@ -45,6 +45,38 @@ if "doc_name" not in st.session_state:
     st.session_state.doc_name = ""
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
+if "history_cleared" not in st.session_state:
+    st.session_state.history_cleared = False
+
+# ---------------------------------------------------------------------------
+# Event handler callbacks — defined before any widget renders so Streamlit
+# can reference them during the current run.
+# ---------------------------------------------------------------------------
+
+def on_file_change() -> None:
+    """Reset the indexed state whenever the user selects a different file.
+
+    Fires via the ``on_change`` hook of ``st.file_uploader``.  If the new
+    file is *different* from the one that is already indexed (or if the
+    uploader was cleared), we invalidate the cached ``VectorStore`` so the
+    user never queries stale results.
+    """
+    new_file = st.session_state.get("uploaded_file_widget")
+    if new_file is None or new_file.name != st.session_state.doc_name:
+        st.session_state.vector_store = None
+        st.session_state.doc_name = ""
+        st.session_state.chat_history = []
+
+
+def on_clear_history() -> None:
+    """Clear the conversation log and set a flag to show a confirmation toast.
+
+    Fires via the ``on_click`` hook of the *Clear history* button so the
+    state mutation is decoupled from the render path.
+    """
+    st.session_state.chat_history = []
+    st.session_state.history_cleared = True
+
 
 col1, col2 = st.columns([1, 1])
 
@@ -52,7 +84,14 @@ with col1:
     st.header("📤 Upload Document")
     # Accept common document types; the ingestion module will detect and
     # extract text from PDF, DOCX, or plain text files.
-    uploaded_file = st.file_uploader("Upload a PDF, DOCX or TXT file", type=["pdf", "docx", "txt"]) 
+    # key= lets on_change read st.session_state.uploaded_file_widget;
+    # on_change resets the index whenever the selected file changes.
+    uploaded_file = st.file_uploader(
+        "Upload a PDF, DOCX or TXT file",
+        type=["pdf", "docx", "txt"],
+        key="uploaded_file_widget",
+        on_change=on_file_change,
+    )
 
     if uploaded_file is not None:
         st.info(f"Selected file: {uploaded_file.name} — {uploaded_file.size/1024:.1f} KB")
@@ -102,10 +141,14 @@ with col2:
     if not st.session_state.vector_store:
         st.info("Please upload and process a document first.")
     else:
-        # Simple question input and submit button. On submit we call
-        # `generate_answer` which performs retrieval + LLM generation.
-        question = st.text_input("Enter your question:")
-        if st.button("🔍 Get answer") and question:
+        # Wrap input + submit in a form so pressing Enter also fires
+        # the submit event (st.form_submit_button responds to Enter).
+        with st.form(key="question_form", clear_on_submit=True):
+            question = st.text_input("Enter your question:")
+            submitted = st.form_submit_button("🔍 Get answer")
+
+        # `submitted` and `question` remain in scope after the form block.
+        if submitted and question:
             with st.spinner("Generating answer — this may call your configured LLM..."):
                 try:
                     answer = generate_answer(question, st.session_state.vector_store)
@@ -120,8 +163,12 @@ with col2:
                 except Exception as e:
                     st.error(f"Answer generation failed: {e}")
 
-        if st.button("🗑️ Clear history"):
-            st.session_state.chat_history = []
+        # on_click fires the callback before the re-render; avoids inline
+        # state mutation in the render path.
+        st.button("🗑️ Clear history", on_click=on_clear_history)
+        if st.session_state.history_cleared:
+            st.toast("Conversation history cleared.", icon="🗑️")
+            st.session_state.history_cleared = False
 
 # Show past Q&A interactions (most recent first)
 if st.session_state.chat_history:

@@ -8,13 +8,17 @@ while using one of them as the primary search backend.
 
 from __future__ import annotations
 
+import logging
 import re
+import time
 from typing import Sequence
 
 import faiss
 import numpy as np
 
 from . import config
+
+logger = logging.getLogger(__name__)
 
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -252,10 +256,18 @@ class VectorStore:
             )
 
     def add(self, embeddings, texts):
-        return self._store.add(embeddings, texts)
+        texts_list = list(texts)
+        logger.info("Adding %d vectors to '%s' backend.", len(texts_list), self.backend)
+        return self._store.add(embeddings, texts_list)
 
     def search(self, query_embedding, top_k=5):
-        return self._store.search(query_embedding, top_k=top_k)
+        _t0 = time.monotonic()
+        results = self._store.search(query_embedding, top_k=top_k)
+        logger.debug(
+            "Vector search returned %d results in %.3fs (backend: %s).",
+            len(results), time.monotonic() - _t0, self.backend,
+        )
+        return results
 
     def clear(self):
         clear = getattr(self._store, "clear", None)
