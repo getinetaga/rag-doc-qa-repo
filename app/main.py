@@ -11,20 +11,58 @@ This module wires together the smaller pipeline components located in the `app`
 package: `ingestion`, `chunking`, `embeddings`, `vector_store`, and `rag`.
 """
 
+import logging
 import os
 import shutil
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, File, UploadFile
 
+from . import config
 from .chunking import chunk_text
-from .embeddings import embed_text
+from .embeddings import embed_text, get_model
 from .ingestion import extract_text
 from .rag import generate_answer
 from .schemas import AnswerResponse, QuestionRequest
 from .vector_store import VectorStore
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(name)s %(levelname)s %(message)s",
+)
+logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifecycle event handlers.
+
+    Startup:
+    - Logs the active LLM provider and vector-backend configuration.
+    - Pre-warms the SentenceTransformer embedding model so the first
+      /upload request is not delayed by a cold-start model load.
+
+    Shutdown:
+    - Closes any open vector-store database connections (e.g., pgvector).
+    """
+    # --- startup ---
+    logger.info(
+        "RAG Document QA API starting up — LLM provider: %s | vector backend: %s",
+        getattr(config, "LLM_PROVIDER", "openai"),
+        getattr(config, "VECTOR_DB_BACKEND", "faiss"),
+    )
+    get_model()
+    logger.info("Embedding model pre-loaded and ready.")
+    yield
+    # --- shutdown ---
+    logger.info("RAG Document QA API shutting down.")
+    if vector_store is not None:
+        vector_store.close()
+        logger.info("Vector store connection closed.")
+
+
 # Initialize FastAPI application
-app = FastAPI(title="RAG Document QA")
+app = FastAPI(title="RAG Document QA", lifespan=lifespan)
 
 # A module-level reference to the currently active VectorStore instance. It is
 # created when a document is uploaded and kept in module scope for subsequent
@@ -50,6 +88,8 @@ async def upload_document(file: UploadFile = File(...)):
 
     global vector_store
 
+    logger.info("Upload request received: %s", file.filename)
+
     # Save uploaded file to a local temporary .Where is the file saved? 
     # It is saved in the current working directory with a name like "temp_<original_filename>".
     file_path = f"temp_{file.filename}"
@@ -73,6 +113,12 @@ async def upload_document(file: UploadFile = File(...)):
     # Clean up the temporary file
     os.remove(file_path)
 
+    logger.info(
+        "Indexed '%s': %d chunks via '%s' backend.",
+        file.filename,
+        len(chunks),
+        getattr(vector_store, "backend", "faiss"),
+    )
     return {"message": "Document processed successfully"}
 
 
@@ -88,5 +134,7 @@ async def ask_question(req: QuestionRequest):
     if not vector_store:
         return {"answer": "No document uploaded yet."}
 
+    logger.info("Question received: %s", req.question)
     answer = generate_answer(req.question, vector_store)
+    logger.debug("Answer generated (%d chars).", len(answer))
     return {"answer": answer}

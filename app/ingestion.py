@@ -7,6 +7,7 @@ files, and aim to return a cleaned Unicode string suitable for downstream
 chunking and embedding.
 """
 
+import time
 from pathlib import Path
 from typing import Optional
 import logging
@@ -38,16 +39,24 @@ def extract_text(file_path: str) -> str:
     path = Path(file_path)
     if not path.exists():
         raise FileNotFoundError(f"File not found: {file_path}")
+    logger.info("Extracting text from '%s'", path.name)
+    _t0 = time.monotonic()
 # Determine file type by extension and call the appropriate extractor
     suffix = path.suffix.lower()
     if suffix == ".pdf":# pdfplumber can handle many PDFs but may fail on scanned/image-based ones
-        return extract_pdf(path)
-    if suffix == ".docx":
-        return extract_docx(path)
-    if suffix == ".txt":
-        return extract_txt(path)
+        result = extract_pdf(path)
+    elif suffix == ".docx":
+        result = extract_docx(path)
+    elif suffix == ".txt":
+        result = extract_txt(path)
+    else:
 # If we reach here, the file type is unsupported
-    raise ValueError(f"Unsupported file type: {suffix}")
+        raise ValueError(f"Unsupported file type: {suffix}")
+    logger.info(
+        "Extraction complete: '%s' — %d chars in %.2fs",
+        path.name, len(result), time.monotonic() - _t0,
+    )
+    return result
 
 
 def extract_pdf(path: Path) -> str:
