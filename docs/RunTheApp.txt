@@ -63,6 +63,11 @@ It assumes you are in the repository root.
 	streamlit run app/streamlit_demo.py
 
 	UI base: http://127.0.0.1:8501
+	UI behavior notes:
+	- changing the selected file triggers a handler that clears stale document and chat state
+	- the Process Document action triggers the upload workflow explicitly
+	- question submission is handled through a submit event, including Enter-to-submit
+	- Clear removes prior question history without restarting the UI
 
 7) Verify quickly
 

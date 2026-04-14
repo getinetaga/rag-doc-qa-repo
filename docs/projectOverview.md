@@ -8,6 +8,7 @@ An AI-powered system that enables users to upload documents and ask natural-lang
 - Semantic search using vector embeddings
 - Context-aware LLM responses
 - Source-grounded answers
+- Callback-based Streamlit event handlers for upload, submit, and clear actions
 - Scalable backend architecture
 
 ## Tech Stack
@@ -26,6 +27,16 @@ An AI-powered system that enables users to upload documents and ask natural-lang
 ## Architecture
 See system architecture diagram in `/docs`
 
+## Frontend Event Handlers
+- `on_change` resets document and chat state when the selected file changes.
+- Process handlers send the selected file to the FastAPI `/upload` endpoint.
+- Form submit handlers send questions to `/ask` and support Enter-to-submit behavior.
+- Clear handlers remove prior question history without restarting the app.
+
+These handlers reduce stale UI state during Streamlit reruns and keep the browser workflow aligned with the backend's current indexed document.
+
 ## How to Run
 ```bash
 uvicorn app.main:app --reload
+streamlit run streamlit_app.py
+```

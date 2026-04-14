@@ -61,6 +61,7 @@ Jenkinsfile          -> CI/CD pipeline definition
 **Purpose:**
 - provides the web user interface
 - allows users to upload documents and ask questions
+- uses Streamlit event handlers to keep upload, submit, and clear actions predictable
 
 **Use it when:**
 - you want to interact with the app visually in the browser
@@ -274,12 +275,15 @@ Visit:
 
 ### Step 5 — Upload a document
 Use the upload panel in the Streamlit app.
+Changing the selected file clears the previous document state before a new upload is processed.
 
 ### Step 6 — Ask a question
 Enter a question about the uploaded document.
+The question form uses a submit event, so pressing Enter or clicking the action button runs the same request flow.
 
 ### Step 7 — Review the answer
 The answer should be clear and include a `References:` line showing the source section.
+Use the Clear action to remove prior chat history without reloading the whole application.
 
 ---
 

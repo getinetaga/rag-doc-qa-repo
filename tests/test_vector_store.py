@@ -1,5 +1,7 @@
 import types
 
+import pytest
+
 from app import vector_store
 
 
@@ -85,3 +87,33 @@ def test_pgvector_search_casts_query_to_vector():
     assert result == ["sample doc"]
     assert "%s::vector" in store._conn.cursor_obj.sql
     assert store._conn.cursor_obj.params[1] >= 1
+
+
+def test_safe_identifier_rejects_invalid_names():
+    with pytest.raises(ValueError, match="Invalid SQL identifier"):
+        vector_store._safe_identifier("rag_embeddings;DROP TABLE")
+
+
+def test_dedupe_texts_preserves_order():
+    texts = ["alpha", "beta", "alpha", "gamma", "beta"]
+
+    assert vector_store._dedupe_texts(texts) == ["alpha", "beta", "gamma"]
+
+
+def test_faiss_vector_store_search_deduplicates_results():
+    store = vector_store.FaissVectorStore(dim=2)
+    store.add(
+        [[0.0, 0.0], [0.0, 0.0], [1.0, 1.0]],
+        ["duplicate", "duplicate", "other"],
+    )
+
+    results = store.search([0.0, 0.0], top_k=2)
+
+    assert results == ["duplicate", "other"]
+
+
+def test_create_vector_store_uses_requested_backend():
+    store = vector_store.create_vector_store(dim=2, backend="faiss")
+
+    assert isinstance(store, vector_store.VectorStore)
+    assert store.backend == "faiss"

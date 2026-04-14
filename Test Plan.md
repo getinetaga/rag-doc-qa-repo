@@ -118,6 +118,7 @@ Ensure new changes do not break:
 - Streamlit
 - FastAPI / Uvicorn
 - Pytest
+- `pytest-cov`
 
 ### Environment Variables
 Expected configuration:
@@ -137,6 +138,24 @@ uvicorn app.main:app --reload
 streamlit run streamlit_app.py
 ```
 
+### Test Requirements Baseline
+The minimum test requirements for this project are:
+- the `tests/` suite must run from the repository root using the existing `pytest.ini` configuration,
+- API regression tests must cover `/upload` and `/ask`,
+- core pipeline tests must cover ingestion, retrieval, fallback behavior, and vector-store logic,
+- UI validation must cover document upload, question submission, clear-history behavior, and API offline messaging,
+- pgvector-specific checks are required when `VECTOR_DB_BACKEND=pgvector` or `hybrid`,
+- each defect fix must add or update at least one relevant automated or manual regression test,
+- release validation must include both automated evidence and a short manual QA summary.
+
+### Test Evidence Requirements
+Each planned test cycle should produce the following evidence:
+- console output from the executed `pytest` command,
+- a pass/fail summary with executed scope,
+- defect references for failed or blocked scenarios,
+- coverage output for regression or release runs,
+- manual QA notes for UI and environment-specific checks.
+
 ---
 
 ## 7. Entry Criteria
@@ -146,7 +165,9 @@ Testing may begin when:
 - `ragdb` exists,
 - `pgvector` extension is enabled,
 - application launches successfully,
-- test environment variables are configured.
+- test environment variables are configured,
+- required sample documents and negative-test files are available,
+- reporting output location for the current cycle is agreed.
 
 ---
 
@@ -157,7 +178,8 @@ Testing is considered complete when:
 - API upload/ask flow is verified,
 - section references appear correctly in answers,
 - regression suite passes,
-- database persistence is confirmed.
+- database persistence is confirmed,
+- test results and supporting evidence are captured in the test report.
 
 ---
 
@@ -201,6 +223,8 @@ Testing is considered complete when:
 | UI-03 | Ask question through UI | Enter question and submit | Answer displayed in UI |
 | UI-04 | Clear history | Click clear button | Chat history removed |
 | UI-05 | API offline state | Stop API and refresh UI | Proper offline error shown |
+| UI-06 | File change resets stale state | Select file A, then select file B | Previous document and chat state is cleared before new processing |
+| UI-07 | Enter-to-submit question | Type question and press Enter | Same behavior as clicking submit |
 
 ### 10.3 Chunking and Retrieval Tests
 | ID | Test Case | Steps | Expected Result |
@@ -234,6 +258,16 @@ Testing is considered complete when:
 | PERF-02 | Repeated queries | Ask multiple questions sequentially | Stable answers, no crash |
 | PERF-03 | Restart and reconnect | Restart backend/UI | App becomes available again |
 
+### 10.7 Usability Tests
+| ID | Test Case | Steps | Expected Result |
+|---|---|---|---|
+| USE-01 | First-time upload flow clarity | Open UI without prior context and attempt upload | Labels and actions are understandable without extra guidance |
+| USE-02 | Question submission discoverability | Upload a document, then ask a question using button or Enter | User can identify how to submit a question without confusion |
+| USE-03 | Error message clarity | Trigger API offline or invalid-input state | Error message explains the problem and next action clearly |
+| USE-04 | History and clear action clarity | Ask multiple questions, then clear history | User can distinguish past answers and understands the effect of Clear |
+| USE-05 | File-change behavior clarity | Select a new file after interacting with a previous one | UI state reset is understandable and does not appear as data loss or malfunction |
+| USE-06 | Readability of answer output | Review returned answer and references | Answer text, references, and status messages are easy to scan |
+
 ---
 
 ## 11. Expected Results Quality Criteria
@@ -248,6 +282,13 @@ References: [Section 1: Introduction]
 ```
 
 - does not expose raw stack traces to the end user.
+
+A usability result is acceptable when:
+- primary actions are easy to identify,
+- form and button behavior are consistent,
+- state changes are understandable,
+- error messages tell the user what to do next,
+- answer and reference text remains readable without extra explanation.
 
 ---
 
@@ -284,6 +325,18 @@ Recommended CI gate:
 python -m pytest -q
 ```
 
+Recommended report-generation commands:
+```bash
+python -m pytest -q --junitxml=reports/test-results.xml
+python -m pytest -q --cov=app --cov=tests --cov-report=term-missing --cov-report=xml:reports/coverage.xml --cov-report=html:reports/htmlcov
+```
+
+Recommended automation outputs:
+- `reports/test-results.xml` for CI result publishing,
+- `reports/coverage.xml` for machine-readable coverage tracking,
+- `reports/htmlcov/` for human-readable coverage review,
+- console logs for fast troubleshooting.
+
 Future improvements:
 - add UI automation for Streamlit,
 - add performance benchmarks,
@@ -300,20 +353,69 @@ Future improvements:
 | No repeated answers | RET-03, RET-04 |
 | PostgreSQL persistence | DB-01 to DB-05 |
 | Graceful provider failure | LLM-02, LLM-03 |
+| Usable UI behavior | UI-01 to UI-07, USE-01 to USE-06 |
 
 ---
 
-## 16. Sign-off Criteria
+## 16. Test Reporting Plan
+
+### 16.1 Report Types
+- **Developer smoke report**: short local summary for targeted changes before review.
+- **Regression report**: CI-backed summary for the automated suite.
+- **Release readiness report**: combined automated and manual QA summary used for sign-off.
+
+### 16.2 Required Report Contents
+Each formal test report should include:
+- test cycle name, date, owner, and environment,
+- build or commit reference,
+- executed scope and omitted scope,
+- pass/fail/blocked counts,
+- linked defect IDs or issue references,
+- key quality risks or known gaps,
+- coverage summary when a regression or release run is performed,
+- final recommendation: pass, pass with risk, fail, or blocked.
+
+### 16.3 Reporting Cadence
+- For local feature work: record a smoke result before requesting review.
+- For CI runs: publish an automated regression result on each merge-relevant run.
+- For release candidates: publish a release readiness report after manual UI and environment validation.
+
+### 16.4 Report Ownership
+- Developers own local smoke summaries for their changes.
+- QA or the feature owner owns the regression summary.
+- The release approver owns the final release readiness decision.
+
+### 16.5 Report Artifacts
+Preferred report artifacts are:
+- terminal output from `pytest`,
+- JUnit XML test results,
+- coverage XML and HTML outputs,
+- manual UI checklist notes,
+- usability observation notes with issues and recommendations,
+- database verification notes for pgvector-backed runs.
+
+### 16.6 Status Definitions
+| Status | Meaning |
+|---|---|
+| Pass | All required tests passed with no blocking risk |
+| Pass with Risk | Tests passed but known non-blocking issues remain documented |
+| Fail | One or more required tests failed or a blocker remains open |
+| Blocked | Testing could not complete because an environment or dependency issue prevented execution |
+
+---
+
+## 17. Sign-off Criteria
 The release is recommended when:
 - all critical and high-priority tests pass,
 - automated tests pass in CI,
 - the Streamlit UI and FastAPI API are operational,
 - answers are concise and section-referenced,
-- PostgreSQL/pgvector data is visible and correct.
+- PostgreSQL/pgvector data is visible and correct,
+- a release readiness test report has been reviewed and accepted.
 
 ---
 
-## 17. Summary
+## 18. Summary
 This test plan ensures the RAG application is validated across:
 - **functionality**,
 - **data retrieval quality**,

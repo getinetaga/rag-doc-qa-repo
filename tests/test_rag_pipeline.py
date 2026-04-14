@@ -34,12 +34,12 @@ def test_generate_answer_huggingface(monkeypatch):
     # Patch _call_huggingface to assert prompt contains the context
     def fake_hf(model, prompt):
         assert "Context chunk A" in prompt
-        return "HF_REPLY"
+        return "Context chunk A"
 
     monkeypatch.setattr(rag, "_call_huggingface", fake_hf)
 
     out = rag.generate_answer("Tell me about A", vs)
-    assert out == "HF_REPLY"
+    assert out == "Context chunk A"
 
 
 def test_generate_answer_openai(monkeypatch):
@@ -55,12 +55,12 @@ def test_generate_answer_openai(monkeypatch):
         class responses:
             @staticmethod
             def create(model, input, temperature=0):
-                return types.SimpleNamespace(output_text="OPENAI_REPLY")
+                return types.SimpleNamespace(output_text="Some helpful context.")
 
     monkeypatch.setattr(rag, "_get_openai_client", lambda: FakeClient())
 
     out = rag.generate_answer("Question?", vs)
-    assert out == "OPENAI_REPLY"
+    assert out == "Some helpful context."
 
 
 def test_generate_answer_handles_provider_errors(monkeypatch):
@@ -127,3 +127,80 @@ def test_generate_answer_fallback_is_clear_and_deduplicated(monkeypatch):
     assert "temporarily unavailable" not in out.lower()
     assert "References:" in out
     assert "Section 1: Introduction" in out
+
+
+def test_generate_answer_returns_requested_message_for_irrelevant_context(monkeypatch):
+    monkeypatch.setattr(config, "LLM_PROVIDER", "openai")
+    monkeypatch.setattr(rag, "embed_text", lambda texts: [[0.2, 0.3, 0.4]])
+    vs = DummyVS(["[Section 1: Cooking] This document describes baking bread."])
+
+    called = {"openai": False}
+
+    def fake_client():
+        called["openai"] = True
+        raise AssertionError("Provider should not be called when context is irrelevant")
+
+    monkeypatch.setattr(rag, "_get_openai_client", fake_client)
+
+    out = rag.generate_answer("What does the document say about Kubernetes clusters?", vs)
+
+    assert out == rag.NO_RELEVANT_INFO_RESPONSE
+    assert called["openai"] is False
+
+
+def test_generate_answer_keeps_external_response_label_without_references(monkeypatch):
+    monkeypatch.setattr(config, "LLM_PROVIDER", "openai")
+    monkeypatch.setattr(rag, "embed_text", lambda texts: [[0.7, 0.8, 0.9]])
+    vs = DummyVS(["[Section 1: Introduction] Python is the main topic."])
+
+    class FakeClient:
+        class responses:
+            @staticmethod
+            def create(model, input, temperature=0):
+                return types.SimpleNamespace(
+                    output_text="External response: Python was created by Guido van Rossum in 1991."
+                )
+
+    monkeypatch.setattr(rag, "_get_openai_client", lambda: FakeClient())
+
+    out = rag.generate_answer("What is the document about?", vs)
+
+    assert out.startswith("External response:")
+    assert "References:" not in out
+
+
+def test_generate_answer_blocks_ungrounded_model_output(monkeypatch):
+    monkeypatch.setattr(config, "LLM_PROVIDER", "openai")
+    monkeypatch.setattr(rag, "embed_text", lambda texts: [[0.7, 0.8, 0.9]])
+    vs = DummyVS(["[Section 1: Introduction] Python is the main topic."])
+
+    class FakeClient:
+        class responses:
+            @staticmethod
+            def create(model, input, temperature=0):
+                return types.SimpleNamespace(output_text="Python was created by Guido van Rossum in 1991.")
+
+    monkeypatch.setattr(rag, "_get_openai_client", lambda: FakeClient())
+
+    out = rag.generate_answer("What is the document about?", vs)
+
+    assert out == rag.NO_RELEVANT_INFO_RESPONSE
+
+
+def test_generate_answer_rejects_partial_term_overlap(monkeypatch):
+    monkeypatch.setattr(config, "LLM_PROVIDER", "openai")
+    monkeypatch.setattr(rag, "embed_text", lambda texts: [[0.6, 0.2, 0.1]])
+    vs = DummyVS(["[Section 2: Benefits] Python benefits include API development and data analysis."])
+
+    called = {"openai": False}
+
+    def fake_client():
+        called["openai"] = True
+        raise AssertionError("Provider should not be called when only partial term overlap exists")
+
+    monkeypatch.setattr(rag, "_get_openai_client", fake_client)
+
+    out = rag.generate_answer("What are the benefits of Kubernetes?", vs)
+
+    assert out == rag.NO_RELEVANT_INFO_RESPONSE
+    assert called["openai"] is False
