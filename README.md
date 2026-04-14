@@ -73,6 +73,11 @@ API endpoints:
 
 The repository contains a simple demo UI you can run locally. It runs the pipeline in-process (ingest → index → ask).
 
+Both Streamlit entry points use explicit event handlers to keep session state predictable:
+- file-selection change handlers clear stale document/chat state,
+- process/submit handlers trigger upload and question requests,
+- clear-history handlers reset prior answers without restarting the app.
+
 ```bash
 streamlit run app/streamlit_demo.py
 # or use the root demo: streamlit run streamlit_app.py

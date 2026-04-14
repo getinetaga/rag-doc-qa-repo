@@ -37,6 +37,20 @@ from .embeddings import embed_text
 logger = logging.getLogger(__name__)
 
 _openai_client = None
+NO_RELEVANT_INFO_RESPONSE = (
+    "I couldn\u2019t find relevant information in the provided documents to answer your question."
+)
+EXTERNAL_RESPONSE_PREFIX = "External response:"
+_QUESTION_STOP_WORDS = {
+    "what", "which", "where", "when", "with", "from", "that", "this",
+    "about", "document", "your", "into", "than", "then", "them",
+    "tell", "question", "questions", "describe", "explain", "summarize",
+    "summary", "mention", "mentioned", "discuss", "discusses", "say", "does",
+}
+_ANSWER_STOP_WORDS = _QUESTION_STOP_WORDS | {
+    "answer", "based", "provided", "documents", "relevant", "information",
+    "couldn", "find", "external", "response",
+}
 
 
 def _get_openai_client():
@@ -189,7 +203,12 @@ def _append_references(answer: str, context_chunks) -> str:
     """Append a `References:` line when section labels are available."""
 
     refs = _extract_section_references(context_chunks)
-    if not refs or "references:" in answer.lower():
+    if (
+        not refs
+        or "references:" in answer.lower()
+        or answer.strip() == NO_RELEVANT_INFO_RESPONSE
+        or answer.strip().lower().startswith(EXTERNAL_RESPONSE_PREFIX.lower())
+    ):
         return answer
 
     formatted = "; ".join(f"[{ref}]" for ref in refs)
@@ -210,10 +229,105 @@ def _dedupe_chunks(context_chunks) -> list[str]:
     return unique
 
 
+def _question_terms(question: str) -> set[str]:
+    """Extract meaningful search terms from a user question."""
+
+    return {
+        token
+        for token in re.findall(r"[A-Za-z0-9']+", question.lower())
+        if len(token) > 2 and token not in _QUESTION_STOP_WORDS
+    }
+
+
+def _answer_terms(answer: str) -> set[str]:
+    """Extract meaningful terms from a generated answer."""
+
+    return {
+        token
+        for token in re.findall(r"[A-Za-z0-9']+", answer.lower())
+        if len(token) > 2 and token not in _ANSWER_STOP_WORDS
+    }
+
+
+def _minimum_overlap_required(terms: set[str]) -> int:
+    """Return the minimum overlap count needed for relevance checks."""
+
+    if not terms:
+        return 0
+    if len(terms) == 1:
+        return 1
+    return 2
+
+
 def _strip_section_label(text: str) -> str:
     """Remove a leading bracketed section label from chunk text."""
 
     return re.sub(r"^\[[^\]]+\]\s*", "", text).strip()
+
+
+def _has_relevant_context(question: str, context_chunks) -> bool:
+    """Return True when retrieved chunks appear relevant to the question."""
+
+    if not context_chunks:
+        return False
+
+    terms = _question_terms(question)
+    if not terms:
+        return True
+
+    required_overlap = _minimum_overlap_required(terms)
+
+    for chunk in context_chunks:
+        chunk_terms = set(re.findall(r"[A-Za-z0-9']+", _strip_section_label(str(chunk)).lower()))
+        overlap = terms & chunk_terms
+        if len(overlap) >= required_overlap:
+            return True
+
+    return False
+
+
+def _answer_addresses_question(question: str, answer: str) -> bool:
+    """Return True when the answer appears responsive to the user's question."""
+
+    question_terms = _question_terms(question)
+    if not question_terms:
+        return True
+
+    answer_terms = _answer_terms(answer)
+    if not answer_terms:
+        return False
+
+    overlap = question_terms & answer_terms
+    return len(overlap) >= 1
+
+
+def _is_answer_grounded(answer: str, context_chunks) -> bool:
+    """Return True when the answer appears supported by retrieved context."""
+
+    if not context_chunks:
+        return False
+
+    answer_body = str(answer).strip()
+    if not answer_body:
+        return False
+
+    answer_body = re.sub(r"\n+References:.*$", "", answer_body, flags=re.IGNORECASE | re.DOTALL).strip()
+    if answer_body.lower().startswith(EXTERNAL_RESPONSE_PREFIX.lower()):
+        return False
+
+    normalized_context = "\n".join(_strip_section_label(str(chunk)) for chunk in context_chunks)
+    context_lower = normalized_context.lower()
+    answer_lower = answer_body.lower()
+    if answer_lower in context_lower:
+        return True
+
+    context_terms = set(re.findall(r"[A-Za-z0-9']+", context_lower))
+    answer_terms = _answer_terms(answer_body)
+    if not answer_terms:
+        return False
+
+    overlap = answer_terms & context_terms
+    return len(overlap) >= max(1, min(2, len(answer_terms))) and (len(overlap) / len(answer_terms)) >= 0.4
 
 
 def _provider_error_answer(question: str, context_chunks, exc: Exception) -> str:
@@ -222,14 +336,10 @@ def _provider_error_answer(question: str, context_chunks, exc: Exception) -> str
     del exc  # The user-facing answer should stay focused on the document.
 
     context_chunks = _dedupe_chunks(context_chunks)
-    if not context_chunks:
-        return "I don't know."
+    if not _has_relevant_context(question, context_chunks):
+        return NO_RELEVANT_INFO_RESPONSE
 
-    terms = {
-        token
-        for token in re.findall(r"[A-Za-z0-9']+", question.lower())
-        if len(token) > 2 and token not in {"what", "which", "where", "when", "with", "from", "that", "this", "about", "document"}
-    }
+    terms = _question_terms(question)
 
     best_sentence = ""
     best_score = -1
@@ -253,6 +363,23 @@ def _provider_error_answer(question: str, context_chunks, exc: Exception) -> str
         best_sentence = _strip_section_label(str(context_chunks[0]))
 
     return best_sentence
+
+
+def _finalize_answer(answer: str, question: str, context_chunks) -> str:
+    """Normalize final answer formatting before returning it to callers."""
+
+    cleaned = str(answer).strip()
+    if not cleaned:
+        return NO_RELEVANT_INFO_RESPONSE
+    if cleaned == NO_RELEVANT_INFO_RESPONSE:
+        return cleaned
+    if cleaned.lower().startswith(EXTERNAL_RESPONSE_PREFIX.lower()):
+        return cleaned
+    if not _is_answer_grounded(cleaned, context_chunks):
+        return NO_RELEVANT_INFO_RESPONSE
+    if not _answer_addresses_question(question, cleaned):
+        return NO_RELEVANT_INFO_RESPONSE
+    return _append_references(cleaned, context_chunks)
 
 
 def generate_answer(question, vector_store):
@@ -281,11 +408,18 @@ def generate_answer(question, vector_store):
     query_embedding = embed_text([question])[0]
     context_chunks = _dedupe_chunks(vector_store.search(query_embedding, config.TOP_K))
 
+    if not _has_relevant_context(question, context_chunks):
+        return NO_RELEVANT_INFO_RESPONSE
+
     context = "\n\n".join(context_chunks)
 
     prompt = f""" 
 Answer the question using ONLY the context below.
-If the answer is not found, say "I don't know."
+If the answer is not supported by the context, return exactly:
+"{NO_RELEVANT_INFO_RESPONSE}"
+Do not use outside knowledge.
+Do not infer facts that are not explicitly supported by the context.
+Only prefix with "{EXTERNAL_RESPONSE_PREFIX}" if you are explicitly unable to stay within the provided context.
 At the end of the answer, include a `References:` line citing the relevant
 bracketed section labels from the context.
 
@@ -306,19 +440,19 @@ Question:
         if config.LLM_PROVIDER == "huggingface":
             answer = _call_huggingface(config.HUGGINGFACE_LLM_MODEL, prompt)
             logger.info("Answer generated via huggingface in %.2fs.", time.monotonic() - _t0)
-            return _append_references(answer, context_chunks)
+            return _finalize_answer(answer, question, context_chunks)
 
         if config.LLM_PROVIDER == "auto":
             answer = _call_fastest_provider(prompt)
             logger.info("Answer generated via auto-provider in %.2fs.", time.monotonic() - _t0)
-            return _append_references(answer, context_chunks)
+            return _finalize_answer(answer, question, context_chunks)
 
         answer = _call_openai(config.OPENAI_LLM_MODEL, prompt)
         logger.info("Answer generated via openai in %.2fs.", time.monotonic() - _t0)
-        return _append_references(answer, context_chunks)
+        return _finalize_answer(answer, question, context_chunks)
     except (OpenAIError, requests.RequestException, RuntimeError, ValueError) as exc:
         logger.warning(
             "LLM provider failed (%.2fs): %s — using fallback answer.",
             time.monotonic() - _t0, exc,
         )
-        return _append_references(_provider_error_answer(question, context_chunks, exc), context_chunks)
+        return _finalize_answer(_provider_error_answer(question, context_chunks, exc), question, context_chunks)

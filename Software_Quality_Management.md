@@ -124,8 +124,10 @@ Quality control focuses on **detecting** defects through validation and measurem
 - `pytest` automated test suite,
 - FastAPI endpoint verification,
 - Streamlit UI validation,
+- manual usability walkthroughs for primary user journeys,
 - pgvector/PostgreSQL checks,
-- regression testing for section references and duplicate-answer issues.
+- regression testing for section references and duplicate-answer issues,
+- test result and coverage artifacts for regression visibility.
 
 ### Key Validation Command
 ```bash
@@ -226,7 +228,9 @@ The following metrics should be used to evaluate quality.
 | Metric | Purpose |
 |---|---|
 | Test pass rate | measures regression safety |
+| Test coverage rate | measures breadth of automated verification |
 | Defect count by severity | measures release risk |
+| Usability issue count | measures friction in the primary UI workflow |
 | Answer clarity rate | measures response usability |
 | Section reference presence | measures answer traceability |
 | Duplicate answer rate | measures retrieval/response quality |
@@ -257,7 +261,9 @@ Review tests to ensure:
 - real behavior is being checked,
 - regressions are covered,
 - no weak/mock-only assertions dominate,
-- error conditions are represented.
+- error conditions are represented,
+- usability checks cover primary user journeys and error recovery,
+- formal test reports capture outcomes and unresolved risks.
 
 ### 12.4 Release Review
 Before deployment:
@@ -359,7 +365,8 @@ Quality focus:
 - user-friendly upload flow,
 - clear answer display,
 - understandable error messages,
-- consistent question history behavior.
+- consistent question history behavior,
+- predictable event-driven interactions for upload, submit, and clear actions.
 
 ---
 
@@ -369,6 +376,7 @@ The following documents support software quality in this project:
 | Document | Purpose |
 |---|---|
 | `Test Plan.md` | defines detailed testing strategy |
+| test execution reports | capture cycle outcome, defects, coverage, and sign-off recommendation |
 | `DevOps.md` | defines deployment and operations quality support |
 | `AI_Integration.md` | defines AI behavior and integration controls |
 | `README.md` | developer and run guidance |
@@ -388,6 +396,7 @@ Software quality must improve over time through:
 - add a dedicated `/health` endpoint,
 - add linting and formatting quality gates,
 - add coverage reporting,
+- standardize test report templates for smoke, regression, and release cycles,
 - add UI automation tests,
 - add performance benchmarks for large files,
 - add source metadata such as file name and page number in references.

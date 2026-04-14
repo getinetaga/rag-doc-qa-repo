@@ -58,6 +58,89 @@ if 'document_size_kb' not in st.session_state:
     st.session_state.document_size_kb = 0.0
 if 'chat_history' not in st.session_state:
     st.session_state.chat_history = []
+if 'process_requested' not in st.session_state:
+    st.session_state.process_requested = False
+if 'question_requested' not in st.session_state:
+    st.session_state.question_requested = False
+if 'process_status' not in st.session_state:
+    st.session_state.process_status = None
+if 'question_error' not in st.session_state:
+    st.session_state.question_error = None
+
+
+def on_file_change() -> None:
+    selected_file = st.session_state.get("uploaded_file_widget")
+    if selected_file is None or selected_file.name != st.session_state.document_name:
+        st.session_state.document_uploaded = False
+        st.session_state.document_name = ""
+        st.session_state.document_size_kb = 0.0
+        st.session_state.chat_history = []
+    st.session_state.process_status = None
+    st.session_state.question_error = None
+
+
+def request_document_processing() -> None:
+    st.session_state.process_requested = True
+
+
+def process_document() -> None:
+    uploaded_file = st.session_state.get("uploaded_file_widget")
+    if uploaded_file is None:
+        st.session_state.process_status = ("error", "Please choose a file before processing.")
+        return
+
+    try:
+        files = {"file": (uploaded_file.name, uploaded_file.getvalue(), uploaded_file.type)}
+        response = requests.post(f"{API_URL}/upload", files=files, timeout=60)
+
+        if response.status_code == 200:
+            st.session_state.document_uploaded = True
+            st.session_state.document_name = uploaded_file.name
+            st.session_state.document_size_kb = uploaded_file.size / 1024
+            st.session_state.chat_history = []
+            st.session_state.process_status = ("success", "Document processed successfully!")
+            st.session_state.question_error = None
+        else:
+            st.session_state.document_uploaded = False
+            st.session_state.process_status = ("error", f"Error: {response.text}")
+    except requests.RequestException as exc:
+        st.session_state.document_uploaded = False
+        st.session_state.process_status = (
+            "error",
+            f"Connection error: {exc}. Make sure the FastAPI server is running on {API_URL}",
+        )
+
+
+def request_question_submission() -> None:
+    st.session_state.question_requested = True
+
+
+def submit_question() -> None:
+    question = st.session_state.get("question_input", "").strip()
+    if not question:
+        st.session_state.question_error = "Enter a question before requesting an answer."
+        return
+
+    try:
+        response = requests.post(f"{API_URL}/ask", json={"question": question}, timeout=60)
+
+        if response.status_code == 200:
+            answer = response.json().get("answer", "")
+            st.session_state.chat_history.append({
+                "question": question,
+                "answer": answer,
+                "timestamp": time.strftime("%H:%M:%S")
+            })
+            st.session_state.question_error = None
+        else:
+            st.session_state.question_error = f"Error: {response.text}"
+    except requests.RequestException as exc:
+        st.session_state.question_error = f"Connection error: {exc}"
+
+
+def clear_chat_history() -> None:
+    st.session_state.chat_history = []
+    st.session_state.question_error = None
 
 # Layout: Two columns
 col1, col2 = st.columns([1, 1])
@@ -70,33 +153,35 @@ with col1:
     uploaded_file = st.file_uploader(
         "Choose a file",
         type=['pdf', 'docx', 'txt'],
-        help="Supported formats: PDF, DOCX, TXT"
+        help="Supported formats: PDF, DOCX, TXT",
+        key="uploaded_file_widget",
+        on_change=on_file_change,
     )
     
     if uploaded_file is not None:
         st.info(f"**Selected file:** {uploaded_file.name}")
         st.info(f"**File size:** {uploaded_file.size / 1024:.2f} KB")
-        
-        if st.button("🚀 Process Document", type="primary", use_container_width=True):
-            with st.spinner("Processing document... This may take a moment."):
-                try:
-                    # Send file to API
-                    files = {"file": (uploaded_file.name, uploaded_file.getvalue(), uploaded_file.type)}
-                    response = requests.post(f"{API_URL}/upload", files=files)
-                    
-                    if response.status_code == 200:
-                        st.session_state.document_uploaded = True
-                        st.session_state.document_name = uploaded_file.name
-                        st.session_state.document_size_kb = uploaded_file.size / 1024
-                        st.session_state.chat_history = []
-                        st.success("✅ Document processed successfully!")
-                        st.balloons()
-                    else:
-                        st.error(f"❌ Error: {response.text}")
-                        
-                except Exception as e:
-                    st.error(f"❌ Connection error: {str(e)}")
-                    st.info("Make sure the FastAPI server is running on http://127.0.0.1:8000")
+
+        st.button(
+            "🚀 Process Document",
+            type="primary",
+            use_container_width=True,
+            on_click=request_document_processing,
+        )
+
+    if st.session_state.process_requested:
+        st.session_state.process_requested = False
+        with st.spinner("Processing document... This may take a moment."):
+            process_document()
+
+    if st.session_state.process_status:
+        status_type, status_message = st.session_state.process_status
+        if status_type == "success":
+            st.success(f"✅ {status_message}")
+            st.balloons()
+            st.session_state.process_status = None
+        else:
+            st.error(f"❌ {status_message}")
 
     if st.session_state.document_uploaded:
         st.markdown('<div class="success-box">✓ Document is ready for questions!</div>', unsafe_allow_html=True)
@@ -108,41 +193,30 @@ with col2:
     if not st.session_state.document_uploaded:
         st.markdown('<div class="info-box">⚠️ Please upload a document first</div>', unsafe_allow_html=True)
     else:
-        question = st.text_input(
-            "Enter your question:",
-            placeholder="e.g., What is the main topic of this document?",
-            key="question_input"
-        )
-        
-        col_btn1, col_btn2 = st.columns([3, 1])
-        with col_btn1:
-            ask_button = st.button("🔍 Get Answer", type="primary", use_container_width=True)
-        with col_btn2:
-            if st.button("🗑️ Clear", use_container_width=True):
-                st.session_state.chat_history = []
-                st.rerun()
-        
-        if ask_button and question:
+        with st.form("question_form", clear_on_submit=True):
+            st.text_input(
+                "Enter your question:",
+                placeholder="e.g., What is the main topic of this document?",
+                key="question_input"
+            )
+            st.form_submit_button(
+                "🔍 Get Answer",
+                type="primary",
+                use_container_width=True,
+                on_click=request_question_submission,
+            )
+
+        _, clear_col = st.columns([3, 1])
+        with clear_col:
+            st.button("🗑️ Clear", use_container_width=True, on_click=clear_chat_history)
+
+        if st.session_state.question_requested:
+            st.session_state.question_requested = False
             with st.spinner("Searching for answer..."):
-                try:
-                    payload = {"question": question}
-                    response = requests.post(f"{API_URL}/ask", json=payload)
-                    
-                    if response.status_code == 200:
-                        answer = response.json()["answer"]
-                        
-                        # Add to chat history
-                        st.session_state.chat_history.append({
-                            "question": question,
-                            "answer": answer,
-                            "timestamp": time.strftime("%H:%M:%S")
-                        })
-                        
-                    else:
-                        st.error(f"❌ Error: {response.text}")
-                        
-                except Exception as e:
-                    st.error(f"❌ Connection error: {str(e)}")
+                submit_question()
+
+        if st.session_state.question_error:
+            st.error(f"❌ {st.session_state.question_error}")
 
 # Display Chat History
 if st.session_state.chat_history:

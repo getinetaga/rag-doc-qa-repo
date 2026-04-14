@@ -34,6 +34,8 @@ Key runtime options:
   produce an answer. Supports OpenAI Responses API and Hugging Face
   Inference API.
 - `app/streamlit_demo.py` — UI to run the pipeline locally in-process.
+- `streamlit_app.py` — API-backed Streamlit UI that talks to `/upload`
+  and `/ask` using callback-driven event handlers.
 - `app/config.py` — Lightweight `.env` loader and central configuration
   (models, provider, chunk sizes, top-K retrieval).
 
@@ -50,6 +52,23 @@ Key runtime options:
 7. `rag.generate_answer` constructs a prompt containing only the
    retrieved context and delegates to the configured LLM backend to
    produce a grounded answer.
+
+## Frontend Event Handling
+
+The Streamlit UIs use explicit widget callbacks rather than relying only
+on inline conditional branches during reruns.
+
+- File uploader `on_change` handlers reset document-specific session
+  state when the selected file changes, which prevents stale answers from
+  being shown for a previous upload.
+- Button and form callbacks trigger document processing and question
+  submission as discrete events before the next render pass.
+- Clear-history callbacks remove prior Q&A state without affecting the
+  current backend configuration.
+
+This event-driven approach makes the UI behavior more predictable during
+Streamlit reruns and keeps the frontend aligned with the backend's
+single-document indexing model.
 
 ## Sequence Diagram (Mermaid)
 
@@ -80,9 +99,10 @@ sequenceDiagram
     Streamlit-->>User: display answer
 ```
 
-The FastAPI flow is similar but uses HTTP: User -> FastAPI `/upload`,
-FastAPI runs the same pipeline steps and stores the index in memory for
-the demo.
+The FastAPI-backed frontend flow is similar but uses HTTP callbacks:
+User -> Streamlit event handler -> FastAPI `/upload` or `/ask`. The
+backend then runs the same pipeline steps and stores the index in memory
+for the demo.
 
 ## Diagrams
 
@@ -135,7 +155,8 @@ Generated assets will be placed in `docs/assets/diagrams`.
 ## Files to Review
 
 - `app/main.py`, `app/rag.py`, `app/ingestion.py`, `app/embeddings.py`,
-  `app/vector_store.py`, `app/streamlit_demo.py`, `Jenkinsfile`, `Dockerfile`.
+  `app/vector_store.py`, `app/streamlit_demo.py`, `streamlit_app.py`,
+  `Jenkinsfile`, `Dockerfile`.
 
 ---
 
