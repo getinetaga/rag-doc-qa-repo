@@ -24,12 +24,15 @@ Notes:
 """
 
 import logging
-import re
+# Logging is used to provide informative messages about the flow of the retrieval and generation process, 
+#including which provider is being used, how many context chunks are retrieved, and any errors that occur during LLM calls. 
+# This helps with debugging and monitoring the application's behavior in production.
+import re # The re module is used for regular expression operations, such as extracting meaningful terms from questions and answers, and for text preprocessing tasks.
 import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
-import requests
-from openai import OpenAI, OpenAIError
+import requests # The requests library is used to make HTTP requests to the Hugging Face Inference API when the Hugging Face provider is configured.
+from openai import OpenAI, OpenAIError # The OpenAI library is used to interact with OpenAI's Responses API when the OpenAI provider is configured.
 
 from . import config
 from .embeddings import embed_text
@@ -40,9 +43,13 @@ _openai_client = None
 NO_RELEVANT_INFO_RESPONSE = (
     "I couldn\u2019t find relevant information in the provided documents to answer your question."
 )
+# The following constants and sets are used for text preprocessing and filtering.
+# EXTERNAL_RESPONSE_PREFIX is a prefix added to external responses.
+# _QUESTION_STOP_WORDS is a set of common stop words to ignore in questions.
+# _ANSWER_STOP_WORDS is a set of common stop words to ignore in answers.
 EXTERNAL_RESPONSE_PREFIX = "External response:"
 _QUESTION_STOP_WORDS = {
-    "what", "which", "where", "when", "with", "from", "that", "this",
+    "what", "which", "where", "when", "with", "why", "from", "that", "this",
     "about", "document", "your", "into", "than", "then", "them",
     "tell", "question", "questions", "describe", "explain", "summarize",
     "summary", "mention", "mentioned", "discuss", "discusses", "say", "does",

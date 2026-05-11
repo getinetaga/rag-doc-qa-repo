@@ -12,8 +12,8 @@ Notes:
     should integrate with log/metrics backends (Prometheus, Grafana, etc.).
 """
 
-import streamlit as st
-import matplotlib.pyplot as plt
+import streamlit as st # Streamlit is a popular open-source Python library that allows you to create interactive web applications for data visualization and machine learning projects with minimal code. It provides an easy-to-use interface for building dashboards and visualizations, making it ideal for quickly displaying metrics and insights in a user-friendly way.
+import matplotlib.pyplot as plt# Matplotlib is a widely used Python library for creating static, animated, and interactive visualizations. In this dashboard, it is used to create line plots for Precision@K and Recall@K metrics, allowing users to visually analyze how these metrics change with different values of K.
 
 # Page configuration
 st.set_page_config(page_title="RAG Retrieval Metrics", layout="wide")
@@ -27,6 +27,8 @@ st.title("📊 Retrieval Performance Dashboard")
 # that this dashboard can read, or by integrating this dashboard directly into your evaluation code to pass the metrics
 # -------------------------
 Ks = [1, 3, 5, 10]
+# These are the different values of K for which Precision@K and Recall@K are calculated. 
+# For example, K=5 means that we are evaluating the precision and recall of the top 5 retrieved items.
 precision_scores = [0.82, 0.78, 0.74, 0.65]
 recall_scores = [0.40, 0.62, 0.75, 0.88]
 topk_accuracy = 0.92
@@ -57,7 +59,7 @@ col3.metric("Top-5 Accuracy", f"{topk_accuracy:.2f}")
 # If all conditions are satisfied, the gate passes; otherwise, it fails, which can be used to automatically 
 # fail CI/CD builds when retrieval performance regresses.
 # -------------------------
-st.subheader("🚦 CI/CD Retrieval Quality Gate")
+st.subheader("🚦 CI/CD Retrieval Quality Gate")# what does this do? 
 
 if (
     precision_scores[2] >= PRECISION_THRESHOLD and

@@ -10,7 +10,7 @@ Security note: Do NOT commit real secrets. Keep your `.env` in
 `.gitignore` (the project already adds `.env` to ignore).
 """
 
-import os
+import os #OS module is used for environment variable access and file path handling.
 
 
 # OpenAI API key read from environment. Required for calls to OpenAI APIs.
@@ -42,7 +42,7 @@ def _load_dotenv_if_present():
 						# skip empty lines, comments, and malformed lines
 						if not line or line.startswith("#") or "=" not in line:
 							continue
-						k, v = line.split("=", 1)
+						k, v = line.split("=", 1)# Split only on the first '=' to allow values with '=' in them
 						k = k.strip()
 						v = v.strip().strip('"').strip("'")
 						# Do not overwrite existing environment variables
