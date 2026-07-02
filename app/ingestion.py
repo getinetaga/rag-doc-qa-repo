@@ -7,13 +7,14 @@ files, and aim to return a cleaned Unicode string suitable for downstream
 chunking and embedding.
 """
 
-import time
-from pathlib import Path
-from typing import Optional
-import logging
+import time# Time module is used for measuring the duration of text extraction processes, allowing for logging of how long each extraction takes.
+from pathlib import Path# Path is used for convenient and cross-platform file path handling, such as checking file existence and extracting file extensions.
+from typing import Optional# Optional is used for type hinting to indicate that a function argument can be of a specified type or None.
+import logging# Logging is used to provide informative messages about the progress and any issues encountered during text extraction, which is helpful for debugging and monitoring the application's behavior.
 
-import pdfplumber
-import docx
+import pdfplumber# pdfplumber is a library used for extracting text from PDF files. It provides a simple interface to read PDFs and extract text while preserving the layout as much as possible.
+import docx# python-docx is a library used for reading and writing Microsoft Word .docx files. It allows for easy extraction of text from Word documents, 
+#including handling of paragraphs and formatting.
 
 logger = logging.getLogger(__name__)
 

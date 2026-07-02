@@ -8,7 +8,10 @@ Keeping these schemas minimal keeps the example app easy to extend
 for additional metadata (e.g., provenance, confidence) in the future.
 """
 
-from pydantic import BaseModel
+from pydantic import BaseModel 
+# BaseModel is used as the base class for defining the Pydantic models (schemas) for request and response 
+# bodies in the FastAPI application. It provides data validation and serialization capabilities, ensuring that 
+# incoming requests and outgoing responses conform to the defined structure.
 
 
 class QuestionRequest(BaseModel):
