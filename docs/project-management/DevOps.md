@@ -179,6 +179,7 @@ python -m pytest -q
 ## 9. CD / Deployment Plan
 
 ### Deployment Targets
+
 Possible deployment modes:
 - local Docker host
 - VM-based deployment
@@ -229,7 +230,8 @@ psql "$PGVECTOR_DSN" -f scripts/create_pgvector_table.sql
 - vacuum/analyze periodically,
 - verify indexes remain healthy,
 - back up `ragdb` regularly,
-- confirm port usage is consistent (`5432`).
+- confirm port usage is consistent (`5432`). Posiible ports?
+
 
 ### Backup Strategy
 - daily logical backup using `pg_dump`

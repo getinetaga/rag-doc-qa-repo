@@ -219,7 +219,7 @@ Add monitoring for:
 
 ### 8.1 `app/embeddings.py`
 **Current role:**
-- loads the SentenceTransformer lazily,
+- loads the SentenceTransformer lazily, What is lazily?
 - caches the model,
 - converts chunks/questions into `float32` vectors.
 
