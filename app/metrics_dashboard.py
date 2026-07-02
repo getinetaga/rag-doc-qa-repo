@@ -12,8 +12,8 @@ Notes:
     should integrate with log/metrics backends (Prometheus, Grafana, etc.).
 """
 
-import streamlit as st # Streamlit is a popular open-source Python library that allows you to create interactive web applications for data visualization and machine learning projects with minimal code. It provides an easy-to-use interface for building dashboards and visualizations, making it ideal for quickly displaying metrics and insights in a user-friendly way.
-import matplotlib.pyplot as plt# Matplotlib is a widely used Python library for creating static, animated, and interactive visualizations. In this dashboard, it is used to create line plots for Precision@K and Recall@K metrics, allowing users to visually analyze how these metrics change with different values of K.
+import matplotlib.pyplot as plt
+import streamlit as st
 
 # Page configuration
 st.set_page_config(page_title="RAG Retrieval Metrics", layout="wide")
@@ -21,21 +21,14 @@ st.title("📊 Retrieval Performance Dashboard")
 
 # -------------------------
 # Sample evaluation results
-# (Replace with real data later),Where to get real data?
-#  You would replace the synthetic/sample data with real evaluation outputs from your retrieval evaluation pipeline.
-#  This could be done by running your evaluation scripts and outputting the metrics to a file (e.g., JSON, CSV) 
-# that this dashboard can read, or by integrating this dashboard directly into your evaluation code to pass the metrics
+# Replace these with real evaluation outputs from your retrieval pipeline.
 # -------------------------
 Ks = [1, 3, 5, 10]
-# These are the different values of K for which Precision@K and Recall@K are calculated. 
-# For example, K=5 means that we are evaluating the precision and recall of the top 5 retrieved items.
 precision_scores = [0.82, 0.78, 0.74, 0.65]
 recall_scores = [0.40, 0.62, 0.75, 0.88]
 topk_accuracy = 0.92
 
-# Thresholds (CI/CD Quality Gate). Are this thresholds arbitrary? Yes, these thresholds are currently set 
-# to example values (e.g., 0.70 for Precision@5, 0.65 for Recall@5, and 0.90 for Top-5 Accuracy).
-#  You should adjust these thresholds based on the specific requirements and performance characteristics of your application and use case.
+# Thresholds for the CI quality gate (tune per project requirements).
 
 PRECISION_THRESHOLD = 0.70
 RECALL_THRESHOLD = 0.65
@@ -53,13 +46,9 @@ col2.metric("Recall@5", f"{recall_scores[2]:.2f}")
 col3.metric("Top-5 Accuracy", f"{topk_accuracy:.2f}")
 
 # -------------------------
-# Quality Gate. What is a quality gate? A quality gate is a set of conditions or thresholds that must be met 
-# for a software build or deployment to be considered successful. In the context of this dashboard, the quality gate checks 
-# whether the retrieval metrics (Precision@5, Recall@5, and Top-5 Accuracy) meet or exceed predefined thresholds. 
-# If all conditions are satisfied, the gate passes; otherwise, it fails, which can be used to automatically 
-# fail CI/CD builds when retrieval performance regresses.
+# Quality Gate
 # -------------------------
-st.subheader("🚦 CI/CD Retrieval Quality Gate")# what does this do? 
+st.subheader("🚦 CI/CD Retrieval Quality Gate")
 
 if (
     precision_scores[2] >= PRECISION_THRESHOLD and
@@ -71,10 +60,7 @@ else:
     st.error("❌ Retrieval Quality Gate FAILED")
 
 # -------------------------
-# Precision@K Plot. What is Precision@K? Precision@K is a metric used to evaluate the performance of 
-# information retrieval systems. It measures the proportion of relevant items among the top K retrieved items. 
-# For example, Precision@5 would calculate how many of the top 5 retrieved items are relevant to the query. 
-# A higher Precision@K indicates that the retrieval system is returning more relevant results within the top K items.
+# Precision@K Plot
 # -------------------------
 st.subheader("📈 Precision@K vs K")
 
@@ -88,8 +74,7 @@ ax1.grid(True)
 st.pyplot(fig1)
 
 # -------------------------
-# Recall@K . how to intergarte in to the dashboard? The Recall@K plot is integrated into the dashboard 
-# as a separate section that visualizes how Recall@K changes with different values of K.
+# Recall@K Plot
 # -------------------------
 st.subheader("📈 Recall@K vs K")
 
@@ -112,6 +97,3 @@ st.markdown("""
 - **Recall@K** improves with larger K, ensuring better information coverage.
 - **Quality Gate** ensures retrieval regressions fail CI/CD automatically.
 """)
-
-#How to Run the Dashboard
-#streamlit run app/streamlit_demo/metrics_dashboard.py

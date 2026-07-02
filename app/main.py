@@ -14,11 +14,9 @@ package: `ingestion`, `chunking`, `embeddings`, `vector_store`, and `rag`.
 import logging
 import os
 import shutil
-from contextlib import asynccontextmanager # asynccontextmanager is used to define the lifespan of the FastAPI application, allowing 
-#for setup and teardown actions during startup and shutdown events.
+from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, File, UploadFile # FastAPI is used to create the web application and define API endpoints. File and UploadFile are used 
-#to handle file uploads in the /upload endpoint.
+from fastapi import FastAPI, File, UploadFile
 
 from . import config
 from .chunking import chunk_text
@@ -72,6 +70,7 @@ app = FastAPI(title="RAG Document QA", lifespan=lifespan)
 # hybrid combination of both.
 vector_store = None
 
+
 @app.post("/upload")
 async def upload_document(file: UploadFile = File(...)):
     """Upload and process a document.
@@ -92,14 +91,12 @@ async def upload_document(file: UploadFile = File(...)):
 
     logger.info("Upload request received: %s", file.filename)
 
-    # Save uploaded file to a local temporary .Where is the file saved? 
-    # It is saved in the current working directory with a name like "temp_<original_filename>".
+    # Save uploaded file to a temporary local path.
     file_path = f"temp_{file.filename}"
     with open(file_path, "wb") as f:
         shutil.copyfileobj(file.file, f)
 
-    # Build the retrieval index from the uploaded document. 
-    # How to access the file? The file is accessed using the `file_path` variable, which points to the temporary file saved on disk.  
+    # Build the retrieval index from the uploaded document.
     text = extract_text(file_path)
     chunks = chunk_text(text)
     embeddings = embed_text(chunks)
@@ -122,10 +119,6 @@ async def upload_document(file: UploadFile = File(...)):
         getattr(vector_store, "backend", "faiss"),
     )
     return {"message": "Document processed successfully"}
-        #what hapened to the document? The document is processed and its text is extracted, chunked, embedded, and stored in the vector store for later retrieval. 
-        # The original file is then deleted from the temporary location. How long is the file stored? 
-        # The file is stored temporarily during the processing of the upload request and is deleted immediately after the vector store is 
-        # updated with the new document's chunks and embeddings.
 
 
 @app.post("/ask", response_model=AnswerResponse)
