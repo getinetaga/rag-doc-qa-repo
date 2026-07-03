@@ -62,3 +62,19 @@ class FeedbackRequest(BaseModel):
 class FeedbackResponse(BaseModel):
     feedback_id: int
     status: str
+
+
+class GoogleDocIngestRequest(BaseModel):
+    google_doc_url: str
+    tenant_id: str = "default"
+    collection_id: str = "default"
+    document_id: str = "default"
+    document_date: str | None = None
+    author: str | None = None
+    tag: str | None = None
+    source_system: str = "google_docs"
+
+
+class IngestResponse(BaseModel):
+    message: str
+    chunks: int

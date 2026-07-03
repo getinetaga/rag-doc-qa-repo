@@ -277,3 +277,106 @@ def test_ask_passes_advanced_retrieval_filters(monkeypatch):
     assert resp.status_code == 200
     assert resp.json()["answer"] == "Filtered answer"
     assert captured == payload
+
+
+def test_upload_google_doc(monkeypatch):
+    def fake_extract_google_doc_text(url):
+        assert "docs.google.com" in url
+        return "Google doc content"
+
+    def fake_chunk_text(text):
+        assert text == "Google doc content"
+        return ["chunk-a", "chunk-b"]
+
+    def fake_embed_text(chunks):
+        return [[0.1, 0.2, 0.3, 0.4] for _ in chunks]
+
+    class FakeVectorStore:
+        def __init__(self, dim):
+            self.texts = []
+
+        def clear(self, source_document=None, filters=None):
+            self.texts = []
+
+        def add(self, embeddings, texts, source_document=None, metadata_list=None):
+            self.texts.extend(texts)
+
+    monkeypatch.setattr(main, "extract_google_doc_text", fake_extract_google_doc_text)
+    monkeypatch.setattr(main, "chunk_text", fake_chunk_text)
+    monkeypatch.setattr(main, "embed_text", fake_embed_text)
+    monkeypatch.setattr(main, "VectorStore", FakeVectorStore)
+
+    resp = client.post(
+        "/upload-google-doc",
+        json={
+            "google_doc_url": "https://docs.google.com/document/d/test-doc-id/edit",
+            "tenant_id": "tenant-1",
+            "collection_id": "collection-1",
+            "document_id": "doc-google-1",
+        },
+    )
+
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["message"] == "Document processed successfully"
+    assert payload["chunks"] == 2
+
+
+def test_upload_default_document_id_keeps_multiple_files(monkeypatch):
+    def fake_extract_text(path):
+        return "sample text"
+
+    def fake_chunk_text(text):
+        return [text]
+
+    def fake_embed_text(chunks):
+        return [[0.0, 0.1, 0.2, 0.3] for _ in chunks]
+
+    class FakeVectorStore:
+        def __init__(self, dim):
+            self.rows = []
+
+        def clear(self, source_document=None, filters=None):
+            remaining = []
+            for row in self.rows:
+                meta = row["metadata"]
+                if source_document is not None and row.get("source_document") != source_document:
+                    remaining.append(row)
+                    continue
+                if filters and any(str(meta.get(k)) != str(v) for k, v in filters.items()):
+                    remaining.append(row)
+                    continue
+            self.rows = remaining
+
+        def add(self, embeddings, texts, source_document=None, metadata_list=None):
+            for idx, text in enumerate(texts):
+                self.rows.append(
+                    {
+                        "text": text,
+                        "source_document": source_document,
+                        "metadata": (metadata_list or [{}])[idx],
+                    }
+                )
+
+        def search(self, query_embedding, top_k=5, source_document=None, filters=None):
+            output = []
+            for row in self.rows:
+                if source_document is not None and row.get("source_document") != source_document:
+                    continue
+                if filters and any(str(row["metadata"].get(k)) != str(v) for k, v in filters.items()):
+                    continue
+                output.append(row["text"])
+            return output[:top_k]
+
+    monkeypatch.setattr(main, "extract_text", fake_extract_text)
+    monkeypatch.setattr(main, "chunk_text", fake_chunk_text)
+    monkeypatch.setattr(main, "embed_text", fake_embed_text)
+    monkeypatch.setattr(main, "VectorStore", FakeVectorStore)
+
+    r1 = client.post("/upload", files={"file": ("alpha.txt", b"a", "text/plain")})
+    r2 = client.post("/upload", files={"file": ("beta.txt", b"b", "text/plain")})
+
+    assert r1.status_code == 200
+    assert r2.status_code == 200
+    assert len(main.vector_store.rows) == 2
+    assert {row["source_document"] for row in main.vector_store.rows} == {"alpha", "beta"}

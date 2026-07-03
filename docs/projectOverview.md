@@ -12,7 +12,7 @@
 9. [How to Run](#how-to-run)
 
 ## Project Overview
-This project delivers an AI-powered document question answering platform using Retrieval-Augmented Generation (RAG). Users upload documents (PDF, DOCX, TXT) and ask natural-language questions. The platform retrieves semantically relevant context from indexed content and generates grounded answers.
+This project delivers an AI-powered document question answering platform using Retrieval-Augmented Generation (RAG). Users upload documents (PDF, DOCX, TXT, image files) or ingest shared Google Docs content, then ask natural-language questions. The platform retrieves semantically relevant context from indexed content and generates grounded answers.
 
 The implementation supports local and API-driven workflows:
 - FastAPI backend for upload and question answering endpoints.
@@ -29,7 +29,7 @@ The project follows a modular, API-first, and testable engineering approach:
 - Use retrieval before generation so responses are based on document context instead of model-only memory.
 
 3. Backend-first reliability:
-- Implement core capabilities in FastAPI endpoints (`/upload`, `/ask`) and reuse them from frontend handlers.
+- Implement core capabilities in FastAPI endpoints (`/upload`, `/upload-google-doc`, `/ask`) and reuse them from frontend handlers.
 
 4. Incremental quality gates:
 - Validate behavior with unit and API tests during development and CI execution.
@@ -41,7 +41,8 @@ The project follows a modular, API-first, and testable engineering approach:
 The architecture uses a staged RAG pipeline with clear module boundaries:
 
 1. Ingestion layer:
-- Extract text from PDF, DOCX, and TXT documents.
+- Extract text from PDF, DOCX, TXT, and image documents (OCR).
+- Fetch and extract plain text from shared Google Docs URLs.
 
 2. Chunking layer:
 - Split extracted text into overlapping chunks for better retrieval relevance.
@@ -74,6 +75,10 @@ RAG and AI:
 - FAISS (in-memory vector similarity search)
 - OpenAI Responses API (optional provider)
 - Hugging Face Inference API (optional provider)
+
+Multimodal and external ingestion:
+- Pillow + pytesseract (image OCR)
+- requests (Google Docs text export fetch)
 
 Frontend and interaction:
 - Streamlit
@@ -118,7 +123,7 @@ Testing is designed to validate behavior at module and API levels while minimizi
 - Validate ingestion, chunking, configuration logic, and vector-store behavior.
 
 2. API testing:
-- Validate FastAPI endpoint contracts for `/upload` and `/ask`.
+- Validate FastAPI endpoint contracts for `/upload`, `/upload-google-doc`, and `/ask`.
 
 3. Pipeline testing:
 - Validate retrieval-to-generation orchestration and error handling.
@@ -133,7 +138,7 @@ Testing is designed to validate behavior at module and API levels while minimizi
 The current repository includes tests under `tests/` covering key scenarios.
 
 Document ingestion and parsing:
-- [tests/test_ingestion.py](tests/test_ingestion.py): validates supported file handling and extracted text behavior.
+- [tests/test_ingestion.py](tests/test_ingestion.py): validates supported file handling, Google Docs URL extraction behavior, and extracted text output.
 
 Chunking behavior:
 - [tests/test_chunking.py](tests/test_chunking.py): validates chunk generation and overlap logic.
@@ -145,7 +150,7 @@ Vector retrieval behavior:
 - [tests/test_vector_store.py](tests/test_vector_store.py): validates vector insertion and similarity search responses.
 
 API contract behavior:
-- [tests/test_api.py](tests/test_api.py): validates upload/ask endpoints, request/response shape, and service interactions.
+- [tests/test_api.py](tests/test_api.py): validates upload/ask endpoints, Google Docs ingestion endpoint behavior, request/response shape, and service interactions.
 
 RAG orchestration:
 - [tests/test_rag_pipeline.py](tests/test_rag_pipeline.py): validates retrieval plus answer-generation flow and boundary conditions.
@@ -153,7 +158,7 @@ RAG orchestration:
 ## Test Reports and Outcomes
 Latest local verification (from repository context):
 - Command: `python -m pytest -q`
-- Result: all executed tests passed with exit code `0`.
+- Result: 46 tests passed with exit code `0`.
 
 Quality interpretation:
 - Core modules and endpoint behavior are validated by automated checks.

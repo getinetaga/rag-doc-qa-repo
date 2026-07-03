@@ -13,22 +13,31 @@ package: `ingestion`, `chunking`, `embeddings`, `vector_store`, and `rag`.
 
 import logging
 import os
+import re
 import shutil
 import threading
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 
 from . import config
 from .chunking import chunk_text
 from .embeddings import embed_text, get_model
-from .ingestion import extract_text
+from .ingestion import extract_google_doc_text, extract_text
 from .ingestion_jobs import enqueue_job, ensure_worker_started, get_job
 from .rag import generate_answer
 from . import slo_metrics
 from . import feedback_store
-from .schemas import AnswerResponse, FeedbackRequest, FeedbackResponse, QuestionRequest
+from .schemas import (
+    AnswerResponse,
+    FeedbackRequest,
+    FeedbackResponse,
+    GoogleDocIngestRequest,
+    IngestResponse,
+    QuestionRequest,
+)
 from .vector_store import VectorStore
 
 logging.basicConfig(
@@ -86,6 +95,18 @@ vector_store = None
 vector_store_lock = threading.RLock()
 
 
+def _resolve_document_id(document_id: str, original_name: str) -> str:
+    """Resolve a stable document id when callers pass the default placeholder."""
+
+    cleaned = str(document_id or "").strip()
+    if cleaned and cleaned.lower() != "default":
+        return cleaned
+
+    stem = Path(str(original_name or "document")).stem
+    slug = re.sub(r"[^A-Za-z0-9_-]+", "_", stem).strip("_").lower()
+    return slug or "document"
+
+
 def _ensure_vector_store(dim: int):
     """Lazily initialize a shared vector store instance."""
 
@@ -110,51 +131,89 @@ def _process_upload_job(
 
     try:
         text = extract_text(file_path)
-        chunks = chunk_text(text)
-        embeddings = embed_text(chunks)
-
-        store = _ensure_vector_store(dim=len(embeddings[0]))
-        metadata_base = {
-            "tenant_id": tenant_id,
-            "collection_id": collection_id,
-            "document_id": document_id,
-        }
-        if document_date:
-            metadata_base["document_date"] = document_date
-        if author:
-            metadata_base["author"] = author
-        if tag:
-            metadata_base["tag"] = tag
-        if source_system:
-            metadata_base["source_system"] = source_system
-        metadata_list = [dict(metadata_base) for _ in chunks]
-
-        with vector_store_lock:
-            clear = getattr(store, "clear", None)
-            if callable(clear):
-                clear(source_document=document_id, filters={"tenant_id": tenant_id, "document_id": document_id})
-
-            store.add(
-                embeddings,
-                chunks,
-                source_document=document_id,
-                metadata_list=metadata_list,
-            )
-
-        logger.info(
-            "Indexed '%s': %d chunks via '%s' backend (tenant=%s collection=%s document=%s).",
-            original_name,
-            len(chunks),
-            getattr(store, "backend", "faiss"),
-            tenant_id,
-            collection_id,
-            document_id,
+        return _index_text_content(
+            text=text,
+            tenant_id=tenant_id,
+            collection_id=collection_id,
+            document_id=document_id,
+            original_name=original_name,
+            document_date=document_date,
+            author=author,
+            tag=tag,
+            source_system=source_system,
         )
-
-        return {"message": "Document processed successfully", "chunks": len(chunks)}
     finally:
         if os.path.exists(file_path):
             os.remove(file_path)
+
+
+def _index_text_content(
+    text: str,
+    tenant_id: str,
+    collection_id: str,
+    document_id: str,
+    original_name: str,
+    document_date: str | None = None,
+    author: str | None = None,
+    tag: str | None = None,
+    source_system: str | None = None,
+):
+    """Chunk, embed, and index text content in the scoped vector store."""
+
+    effective_document_id = _resolve_document_id(document_id, original_name)
+
+    chunks = chunk_text(text)
+    if not chunks:
+        raise ValueError("No extractable text content was found.")
+
+    embeddings = embed_text(chunks)
+
+    store = _ensure_vector_store(dim=len(embeddings[0]))
+    metadata_base = {
+        "tenant_id": tenant_id,
+        "collection_id": collection_id,
+        "document_id": effective_document_id,
+    }
+    if document_date:
+        metadata_base["document_date"] = document_date
+    if author:
+        metadata_base["author"] = author
+    if tag:
+        metadata_base["tag"] = tag
+    if source_system:
+        metadata_base["source_system"] = source_system
+    metadata_list = [dict(metadata_base) for _ in chunks]
+
+    with vector_store_lock:
+        clear = getattr(store, "clear", None)
+        if callable(clear):
+            clear(
+                source_document=effective_document_id,
+                filters={
+                    "tenant_id": tenant_id,
+                    "collection_id": collection_id,
+                    "document_id": effective_document_id,
+                },
+            )
+
+        store.add(
+            embeddings,
+            chunks,
+            source_document=effective_document_id,
+            metadata_list=metadata_list,
+        )
+
+    logger.info(
+        "Indexed '%s': %d chunks via '%s' backend (tenant=%s collection=%s document=%s).",
+        original_name,
+        len(chunks),
+        getattr(store, "backend", "faiss"),
+        tenant_id,
+        collection_id,
+        effective_document_id,
+    )
+
+    return {"message": "Document processed successfully", "chunks": len(chunks)}
 
 
 @app.post("/upload")
@@ -252,6 +311,31 @@ async def upload_document(
     finally:
         if remove_temp_file and os.path.exists(file_path):
             os.remove(file_path)
+
+
+@app.post("/upload-google-doc", response_model=IngestResponse)
+async def upload_google_doc(req: GoogleDocIngestRequest):
+    """Ingest a Google Doc by URL and index it in the vector store."""
+
+    request_started_at = time.monotonic()
+    try:
+        text = extract_google_doc_text(req.google_doc_url)
+        result = _index_text_content(
+            text=text,
+            tenant_id=req.tenant_id,
+            collection_id=req.collection_id,
+            document_id=req.document_id,
+            original_name=req.google_doc_url,
+            document_date=req.document_date,
+            author=req.author,
+            tag=req.tag,
+            source_system=req.source_system,
+        )
+        slo_metrics.record_request(time.monotonic() - request_started_at, success=True)
+        return result
+    except Exception:
+        slo_metrics.record_request(time.monotonic() - request_started_at, success=False)
+        raise
 
 
 @app.post("/ask", response_model=AnswerResponse)
