@@ -51,7 +51,9 @@ def test_ask_without_upload():
     main.vector_store = None
     resp = client.post("/ask", json={"question": "Hello"})
     assert resp.status_code == 200
-    assert resp.json() == {"answer": "No document uploaded yet."}
+    payload = resp.json()
+    assert payload["answer"] == "No document uploaded yet."
+    assert "question_domain" in payload
 
 
 def test_upload_and_ask(monkeypatch):
@@ -380,3 +382,41 @@ def test_upload_default_document_id_keeps_multiple_files(monkeypatch):
     assert r2.status_code == 200
     assert len(main.vector_store.rows) == 2
     assert {row["source_document"] for row in main.vector_store.rows} == {"alpha", "beta"}
+
+
+def test_ask_response_includes_question_domain(monkeypatch):
+    class FakeVectorStore:
+        pass
+
+    main.vector_store = FakeVectorStore()
+
+    def fake_generate_answer(
+        question,
+        vector_store,
+        tenant_id=None,
+        collection_id=None,
+        document_id=None,
+        document_date=None,
+        author=None,
+        tag=None,
+        source_system=None,
+    ):
+        return "Use pgvector for persistence and SQL integrations."
+
+    monkeypatch.setattr(main, "generate_answer", fake_generate_answer)
+
+    resp = client.post("/ask", json={"question": "What is pgvector?"})
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["answer"] == "Use pgvector for persistence and SQL integrations."
+    assert payload["question_domain"] == "definition"
+
+
+def test_question_domains_endpoint_returns_catalog():
+    resp = client.get("/question-domains")
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert "domains" in payload
+    assert isinstance(payload["domains"], list)
+    assert any(item["id"] == "fact_based" for item in payload["domains"])
+    assert any(item["id"] == "conversational_followup" for item in payload["domains"])

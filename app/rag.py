@@ -69,6 +69,227 @@ _ANSWER_STOP_WORDS = _QUESTION_STOP_WORDS | {
     "couldn", "find", "external", "response",
 }
 
+_GENERIC_QUERY_TERMS = {
+    "benefits",
+    "project",
+    "document",
+    "documents",
+    "application",
+    "system",
+    "details",
+    "overview",
+    "information",
+    "include",
+    "includes",
+}
+
+
+QUESTION_DOMAIN_CATALOG = [
+    {
+        "id": "fact_based",
+        "name": "Fact-Based Questions",
+        "description": "Direct fact lookup where the answer is explicitly in the source.",
+        "retrieval_quality_focus": "exact entity/value match",
+        "sample_questions": ["What is OAuth 2.0?", "Who approved the design?"],
+    },
+    {
+        "id": "definition",
+        "name": "Definition Questions",
+        "description": "Explain terminology and concepts from retrieved context.",
+        "retrieval_quality_focus": "term-definition grounding",
+        "sample_questions": ["What is RAG?", "Explain RBAC."],
+    },
+    {
+        "id": "procedure",
+        "name": "Procedure Questions",
+        "description": "How-to and step-by-step instruction queries.",
+        "retrieval_quality_focus": "ordered step completeness",
+        "sample_questions": ["How do I deploy the application?"],
+    },
+    {
+        "id": "comparison",
+        "name": "Comparison Questions",
+        "description": "Compare two or more options, tools, or approaches.",
+        "retrieval_quality_focus": "balanced multi-entity evidence",
+        "sample_questions": ["FAISS vs pgvector"],
+    },
+    {
+        "id": "summarization",
+        "name": "Summarization Questions",
+        "description": "Summarize a full document, section, or report.",
+        "retrieval_quality_focus": "coverage of key points",
+        "sample_questions": ["Summarize the project plan."],
+    },
+    {
+        "id": "list_extraction",
+        "name": "List Extraction Questions",
+        "description": "Extract enumerations such as risks, milestones, and APIs.",
+        "retrieval_quality_focus": "list completeness and dedupe",
+        "sample_questions": ["List all project risks."],
+    },
+    {
+        "id": "search_navigation",
+        "name": "Search and Navigation Questions",
+        "description": "Locate where information appears in source material.",
+        "retrieval_quality_focus": "location precision",
+        "sample_questions": ["Where is warranty information?"],
+    },
+    {
+        "id": "citation",
+        "name": "Citation Questions",
+        "description": "Request source references, chunks, pages, and provenance.",
+        "retrieval_quality_focus": "source attribution fidelity",
+        "sample_questions": ["Which page contains this information?"],
+    },
+    {
+        "id": "analytical",
+        "name": "Analytical Questions",
+        "description": "Reasoning-heavy questions using retrieved evidence.",
+        "retrieval_quality_focus": "multi-chunk synthesis quality",
+        "sample_questions": ["Why is hybrid search better?"],
+    },
+    {
+        "id": "decision_support",
+        "name": "Decision Support Questions",
+        "description": "Help choose between alternatives based on evidence.",
+        "retrieval_quality_focus": "trade-off clarity",
+        "sample_questions": ["Should I use Pinecone or pgvector?"],
+    },
+    {
+        "id": "multi_document",
+        "name": "Multi-Document Questions",
+        "description": "Combine and compare evidence across multiple documents.",
+        "retrieval_quality_focus": "cross-document coverage",
+        "sample_questions": ["What changed between v1 and v2?"],
+    },
+    {
+        "id": "compliance",
+        "name": "Compliance Questions",
+        "description": "Check policy, requirement, or standard conformance.",
+        "retrieval_quality_focus": "requirement traceability",
+        "sample_questions": ["Does the system support RBAC?"],
+    },
+    {
+        "id": "numerical",
+        "name": "Numerical Questions",
+        "description": "Retrieve numeric values and quantitative constraints.",
+        "retrieval_quality_focus": "number extraction accuracy",
+        "sample_questions": ["What is the API rate limit?"],
+    },
+    {
+        "id": "metadata",
+        "name": "Metadata Questions",
+        "description": "Ask about author, date, owner, and version metadata.",
+        "retrieval_quality_focus": "metadata field precision",
+        "sample_questions": ["Who authored this document?"],
+    },
+    {
+        "id": "troubleshooting",
+        "name": "Troubleshooting Questions",
+        "description": "Diagnose failures and explain probable causes.",
+        "retrieval_quality_focus": "root-cause evidence",
+        "sample_questions": ["Why is vector search returning no results?"],
+    },
+    {
+        "id": "security",
+        "name": "Security Questions",
+        "description": "Authentication, authorization, and protection controls.",
+        "retrieval_quality_focus": "control mapping completeness",
+        "sample_questions": ["How is data encrypted?"],
+    },
+    {
+        "id": "code_related",
+        "name": "Code-Related Questions",
+        "description": "Locate or explain implementation details and code snippets.",
+        "retrieval_quality_focus": "snippet relevance",
+        "sample_questions": ["Show the upload endpoint implementation."],
+    },
+    {
+        "id": "recommendation",
+        "name": "Recommendation Questions",
+        "description": "Ask for best-practice recommendation based on context.",
+        "retrieval_quality_focus": "justified recommendation quality",
+        "sample_questions": ["Which vector database is recommended?"],
+    },
+    {
+        "id": "conversational_followup",
+        "name": "Conversational Follow-up Questions",
+        "description": "Follow-up requests that depend on prior turns.",
+        "retrieval_quality_focus": "context carry-over",
+        "sample_questions": ["Tell me more about that."],
+    },
+]
+
+
+def get_question_domain_catalog() -> list[dict]:
+    """Return the supported question-domain taxonomy for QA evaluation."""
+
+    return [dict(item) for item in QUESTION_DOMAIN_CATALOG]
+
+
+def classify_question_domain(question: str) -> str:
+    """Classify a user question into one of the supported question domains."""
+
+    q = " ".join(str(question or "").lower().split())
+    if not q:
+        return "fact_based"
+
+    if q.startswith(("tell me more", "explain the previous", "compare it", "what about that", "give an example")):
+        return "conversational_followup"
+
+    if any(token in q for token in ("show the source", "which page", "chunk", "citation", "confidence score", "source document")):
+        return "citation"
+
+    if any(token in q for token in ("where is", "which page", "find references", "open the appendix", "chapter ", "go to page")):
+        return "search_navigation"
+
+    if any(token in q for token in ("list ", "all the", "supported file types", "stakeholders", "milestones", "risks")):
+        return "list_extraction"
+
+    if any(token in q for token in ("summarize", "summary", "key points", "executive summary")):
+        return "summarization"
+
+    if any(token in q for token in ("vs ", "versus", "compare", "difference between")):
+        return "comparison"
+
+    if any(token in q for token in ("how do i", "how to", "steps", "configure", "deploy", "setup", "set up")):
+        return "procedure"
+
+    if any(token in q for token in ("recommend", "should i", "best option", "which should", "suitable for")):
+        return "recommendation"
+
+    if any(token in q for token in ("compliant", "compliance", "required", "zero trust", "policy")):
+        return "compliance"
+
+    if any(token in q for token in ("budget", "how many", "rate limit", "storage", "maximum", "minimum", "number of")):
+        return "numerical"
+
+    if any(token in q for token in ("authored", "last updated", "department", "version", "metadata")):
+        return "metadata"
+
+    if any(token in q for token in ("why is", "failing", "no results", "hallucinating", "slow", "error")):
+        return "troubleshooting"
+
+    if any(token in q for token in ("authentication", "authorization", "permissions", "encrypted", "security", "rbac", "sso", "mfa")):
+        return "security"
+
+    if any(token in q for token in ("show the", "endpoint", "function", "python", "code", "implemented", "api creates")):
+        return "code_related"
+
+    if any(token in q for token in ("advantages", "why", "scalable", "trade-off", "impact")):
+        return "analytical"
+
+    if any(token in q for token in ("which embedding model", "which cloud", "choose", "decision")):
+        return "decision_support"
+
+    if any(token in q for token in ("between version", "across documents", "which documents", "all reports")):
+        return "multi_document"
+
+    if q.startswith(("what is", "define", "explain ")):
+        return "definition"
+
+    return "fact_based"
+
 
 def _get_openai_client():
     """Lazily create and return an OpenAI client.
@@ -503,6 +724,17 @@ def _minimum_overlap_required(terms: set[str]) -> int:
     return 2
 
 
+def _is_high_signal_term(term: str) -> bool:
+    """Return True when a single overlap term is specific enough to trust."""
+
+    cleaned = str(term or "").strip().lower()
+    if not cleaned or cleaned in _GENERIC_QUERY_TERMS:
+        return False
+    if cleaned.isdigit():
+        return False
+    return len(cleaned) >= 5
+
+
 def _strip_section_label(text: str) -> str:
     """Remove a leading bracketed section label from chunk text."""
 
@@ -526,6 +758,10 @@ def _has_relevant_context(question: str, context_chunks) -> bool:
         overlap = terms & chunk_terms
         if len(overlap) >= required_overlap:
             return True
+        if len(overlap) == 1 and len(terms) <= 3:
+            term = next(iter(overlap))
+            if _is_high_signal_term(term):
+                return True
 
     return False
 

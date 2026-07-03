@@ -28,6 +28,7 @@ from .embeddings import embed_text, get_model
 from .ingestion import extract_google_doc_text, extract_text
 from .ingestion_jobs import enqueue_job, ensure_worker_started, get_job
 from .rag import generate_answer
+from .rag import classify_question_domain, get_question_domain_catalog
 from . import slo_metrics
 from . import feedback_store
 from .schemas import (
@@ -36,6 +37,7 @@ from .schemas import (
     FeedbackResponse,
     GoogleDocIngestRequest,
     IngestResponse,
+    QuestionDomainCatalogResponse,
     QuestionRequest,
 )
 from .vector_store import VectorStore
@@ -351,6 +353,7 @@ async def ask_question(req: QuestionRequest):
         return {"answer": "No document uploaded yet."}
 
     logger.info("Question received: %s", req.question)
+    domain = classify_question_domain(req.question)
     with vector_store_lock:
         answer = generate_answer(
             req.question,
@@ -364,7 +367,14 @@ async def ask_question(req: QuestionRequest):
             source_system=req.source_system,
         )
     logger.debug("Answer generated (%d chars).", len(answer))
-    return {"answer": answer}
+    return {"answer": answer, "question_domain": domain}
+
+
+@app.get("/question-domains", response_model=QuestionDomainCatalogResponse)
+async def list_question_domains():
+    """Return the question-domain taxonomy supported by this RAG QA system."""
+
+    return {"domains": get_question_domain_catalog()}
 
 
 @app.get("/ingestion-jobs/{job_id}")

@@ -43,6 +43,7 @@ class AnswerResponse(BaseModel):
     """
 
     answer: str
+    question_domain: str | None = None
 
 
 class FeedbackRequest(BaseModel):
@@ -78,3 +79,15 @@ class GoogleDocIngestRequest(BaseModel):
 class IngestResponse(BaseModel):
     message: str
     chunks: int
+
+
+class QuestionDomainItem(BaseModel):
+    id: str
+    name: str
+    description: str
+    retrieval_quality_focus: str
+    sample_questions: list[str]
+
+
+class QuestionDomainCatalogResponse(BaseModel):
+    domains: list[QuestionDomainItem]

@@ -212,6 +212,29 @@ def test_generate_answer_rejects_partial_term_overlap(monkeypatch):
     assert called["openai"] is False
 
 
+def test_generate_answer_accepts_short_question_with_high_signal_overlap(monkeypatch):
+    monkeypatch.setattr(config, "LLM_PROVIDER", "openai")
+    monkeypatch.setattr(rag, "embed_text", lambda texts: [[0.2, 0.2, 0.2]])
+    vs = DummyVS([
+        "[Section 1: Stack] Python was used to build FastAPI endpoints, data ingestion, and embedding services.",
+    ])
+
+    class FakeClient:
+        class responses:
+            @staticmethod
+            def create(model, input, temperature=0):
+                return types.SimpleNamespace(
+                    output_text="Python was used to build FastAPI endpoints, data ingestion, and embedding services."
+                )
+
+    monkeypatch.setattr(rag, "_get_openai_client", lambda: FakeClient())
+
+    out = rag.generate_answer("What was the application of Python in this document?", vs)
+
+    assert "Python was used to build FastAPI endpoints" in out
+    assert out != rag.NO_RELEVANT_INFO_RESPONSE
+
+
 def test_rerank_context_chunks_promotes_more_relevant_chunk():
     chunks = [
         "[Section 1: Overview] This part discusses deployment and packaging.",
