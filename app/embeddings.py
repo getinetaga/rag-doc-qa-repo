@@ -11,14 +11,14 @@ Notes:
   when constructing network clients; do not disable verification globally.
 """
 
-import threading
+import threading #Threading is used to ensure that the model is loaded in a thread-safe manner, preventing multiple threads from loading the model simultaneously.
 from typing import Iterable
 
 import numpy as np
 
 _MODEL_NAME = "all-MiniLM-L6-v2"
-_model = None
-_model_lock = threading.Lock()
+_model = None# Global variable to hold the loaded model instance. Initialized to None and set on first call to get_model().
+_model_lock = threading.Lock() # Lock to ensure thread-safe initialization of the model.
 
 
 def get_model():
@@ -84,7 +84,7 @@ def embed_text(texts: Iterable[str], batch_size: int = 32) -> np.ndarray:
         # Request NumPy output explicitly and avoid progress bars in servers
         embeddings = model.encode(
             texts_list,
-            show_progress_bar=False,
+            show_progress_bar=False,# why is it set to false? In a server environment, progress bars can clutter logs and are not useful, so we disable them by default.
             convert_to_numpy=True,
             batch_size=batch_size,
         )

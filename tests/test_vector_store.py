@@ -12,10 +12,10 @@ class FakePGVectorStore:
         self.table_name = table_name
         self.rows = []
 
-    def add(self, embeddings, texts):
+    def add(self, embeddings, texts, source_document=None, metadata_list=None):
         self.rows.extend(zip(embeddings, texts))
 
-    def search(self, query_embedding, top_k=5):
+    def search(self, query_embedding, top_k=5, source_document=None, filters=None):
         return [text for _, text in self.rows[:top_k]] or ["pgvector-result"]
 
 

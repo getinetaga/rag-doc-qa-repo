@@ -1,0 +1,53 @@
+version: '3.9'
+
+services:
+  api:
+    build: .
+    command: sh -c "uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers ${API_WORKERS:-4}"
+    ports:
+      - "8000:8000"
+    environment:
+      API_WORKERS: ${API_WORKERS:-4}
+      RETRIEVAL_SERVICE_URL: http://retrieval:8001
+      INFERENCE_SERVICE_URL: http://inference:8002
+      VECTOR_DB_BACKEND: ${VECTOR_DB_BACKEND:-pgvector}
+      PGVECTOR_DSN: ${PGVECTOR_DSN:-}
+      PGVECTOR_TABLE_NAME: ${PGVECTOR_TABLE_NAME:-rag_embeddings}
+      LLM_PROVIDER: ${LLM_PROVIDER:-openai}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      HUGGINGFACE_API_KEY: ${HUGGINGFACE_API_KEY:-}
+      OPENAI_LLM_MODEL: ${OPENAI_LLM_MODEL:-gpt-4o-mini}
+      HUGGINGFACE_LLM_MODEL: ${HUGGINGFACE_LLM_MODEL:-google/flan-t5-base}
+    depends_on:
+      - retrieval
+      - inference
+
+  retrieval:
+    build: .
+    command: sh -c "uvicorn app.retrieval_service:app --host 0.0.0.0 --port 8001 --workers ${RETRIEVAL_WORKERS:-2}"
+    expose:
+      - "8001"
+    environment:
+      RETRIEVAL_WORKERS: ${RETRIEVAL_WORKERS:-2}
+      VECTOR_DB_BACKEND: ${VECTOR_DB_BACKEND:-pgvector}
+      PGVECTOR_DSN: ${PGVECTOR_DSN:-}
+      PGVECTOR_TABLE_NAME: ${PGVECTOR_TABLE_NAME:-rag_embeddings}
+      EMBEDDING_DIM: ${EMBEDDING_DIM:-384}
+      TOP_K: ${TOP_K:-5}
+      RETRIEVAL_RERANK_POOL_SIZE: ${RETRIEVAL_RERANK_POOL_SIZE:-20}
+      LLM_PROVIDER: ${LLM_PROVIDER:-openai}
+    restart: unless-stopped
+
+  inference:
+    build: .
+    command: sh -c "uvicorn app.inference_service:app --host 0.0.0.0 --port 8002 --workers ${INFERENCE_WORKERS:-2}"
+    expose:
+      - "8002"
+    environment:
+      INFERENCE_WORKERS: ${INFERENCE_WORKERS:-2}
+      LLM_PROVIDER: ${LLM_PROVIDER:-openai}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      HUGGINGFACE_API_KEY: ${HUGGINGFACE_API_KEY:-}
+      OPENAI_LLM_MODEL: ${OPENAI_LLM_MODEL:-gpt-4o-mini}
+      HUGGINGFACE_LLM_MODEL: ${HUGGINGFACE_LLM_MODEL:-google/flan-t5-base}
+    restart: unless-stopped
