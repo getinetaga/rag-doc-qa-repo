@@ -14,18 +14,21 @@ package: `ingestion`, `chunking`, `embeddings`, `vector_store`, and `rag`.
 import logging
 import os
 import shutil
-from contextlib import asynccontextmanager # asynccontextmanager is used to define the lifespan of the FastAPI application, allowing 
-#for setup and teardown actions during startup and shutdown events.
+import threading
+import time
+from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, File, UploadFile # FastAPI is used to create the web application and define API endpoints. File and UploadFile are used 
-#to handle file uploads in the /upload endpoint.
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 
 from . import config
 from .chunking import chunk_text
 from .embeddings import embed_text, get_model
 from .ingestion import extract_text
+from .ingestion_jobs import enqueue_job, ensure_worker_started, get_job
 from .rag import generate_answer
-from .schemas import AnswerResponse, QuestionRequest
+from . import slo_metrics
+from . import feedback_store
+from .schemas import AnswerResponse, FeedbackRequest, FeedbackResponse, QuestionRequest
 from .vector_store import VectorStore
 
 logging.basicConfig(
@@ -55,6 +58,15 @@ async def lifespan(app: FastAPI):
     )
     get_model()
     logger.info("Embedding model pre-loaded and ready.")
+    ensure_worker_started()
+
+    global vector_store
+    if vector_store is None:
+        try:
+            vector_store = VectorStore(dim=getattr(config, "EMBEDDING_DIM", 384))
+            logger.info("Shared vector store initialized at startup.")
+        except Exception as exc:
+            logger.warning("Vector store startup initialization deferred: %s", exc)
     yield
     # --- shutdown ---
     logger.info("RAG Document QA API shutting down.")
@@ -71,9 +83,91 @@ app = FastAPI(title="RAG Document QA", lifespan=lifespan)
 # /ask calls. Depending on configuration it can use FAISS, pgvector, or a
 # hybrid combination of both.
 vector_store = None
+vector_store_lock = threading.RLock()
+
+
+def _ensure_vector_store(dim: int):
+    """Lazily initialize a shared vector store instance."""
+
+    global vector_store
+    if vector_store is None:
+        vector_store = VectorStore(dim=dim)
+    return vector_store
+
+
+def _process_upload_job(
+    file_path: str,
+    tenant_id: str,
+    collection_id: str,
+    document_id: str,
+    original_name: str,
+    document_date: str | None = None,
+    author: str | None = None,
+    tag: str | None = None,
+    source_system: str | None = None,
+):
+    """Process an uploaded file and update the scoped vector index."""
+
+    try:
+        text = extract_text(file_path)
+        chunks = chunk_text(text)
+        embeddings = embed_text(chunks)
+
+        store = _ensure_vector_store(dim=len(embeddings[0]))
+        metadata_base = {
+            "tenant_id": tenant_id,
+            "collection_id": collection_id,
+            "document_id": document_id,
+        }
+        if document_date:
+            metadata_base["document_date"] = document_date
+        if author:
+            metadata_base["author"] = author
+        if tag:
+            metadata_base["tag"] = tag
+        if source_system:
+            metadata_base["source_system"] = source_system
+        metadata_list = [dict(metadata_base) for _ in chunks]
+
+        with vector_store_lock:
+            clear = getattr(store, "clear", None)
+            if callable(clear):
+                clear(source_document=document_id, filters={"tenant_id": tenant_id, "document_id": document_id})
+
+            store.add(
+                embeddings,
+                chunks,
+                source_document=document_id,
+                metadata_list=metadata_list,
+            )
+
+        logger.info(
+            "Indexed '%s': %d chunks via '%s' backend (tenant=%s collection=%s document=%s).",
+            original_name,
+            len(chunks),
+            getattr(store, "backend", "faiss"),
+            tenant_id,
+            collection_id,
+            document_id,
+        )
+
+        return {"message": "Document processed successfully", "chunks": len(chunks)}
+    finally:
+        if os.path.exists(file_path):
+            os.remove(file_path)
+
 
 @app.post("/upload")
-async def upload_document(file: UploadFile = File(...)):
+async def upload_document(
+    file: UploadFile = File(...),
+    tenant_id: str = Form("default"),
+    collection_id: str = Form("default"),
+    document_id: str = Form("default"),
+    document_date: str | None = Form(None),
+    author: str | None = Form(None),
+    tag: str | None = Form(None),
+    source_system: str | None = Form(None),
+):
     """Upload and process a document.
 
     Steps:
@@ -91,41 +185,73 @@ async def upload_document(file: UploadFile = File(...)):
     global vector_store
 
     logger.info("Upload request received: %s", file.filename)
+    request_started_at = time.monotonic()
 
-    # Save uploaded file to a local temporary .Where is the file saved? 
-    # It is saved in the current working directory with a name like "temp_<original_filename>".
+    # Save uploaded file to a temporary local path.
     file_path = f"temp_{file.filename}"
     with open(file_path, "wb") as f:
         shutil.copyfileobj(file.file, f)
 
-    # Build the retrieval index from the uploaded document. 
-    # How to access the file? The file is accessed using the `file_path` variable, which points to the temporary file saved on disk.  
-    text = extract_text(file_path)
-    chunks = chunk_text(text)
-    embeddings = embed_text(chunks)
+    remove_temp_file = True
 
-    # Initialize the vector store for the current upload and replace any
-    # previous persisted document chunks so answers stay focused and don't repeat.
-    vector_store = VectorStore(dim=len(embeddings[0]))
-    clear = getattr(vector_store, "clear", None)
-    if callable(clear):
-        clear()
-    vector_store.add(embeddings, chunks)
+    try:
+        try:
+            file_size = int(getattr(file, "size", 0) or os.path.getsize(file_path))
+        except OSError:
+            file_size = 0
 
-    # Clean up the temporary file
-    os.remove(file_path)
+        should_queue = config.ASYNC_INGESTION_MIN_BYTES == 0 or file_size >= config.ASYNC_INGESTION_MIN_BYTES
 
-    logger.info(
-        "Indexed '%s': %d chunks via '%s' backend.",
-        file.filename,
-        len(chunks),
-        getattr(vector_store, "backend", "faiss"),
-    )
-    return {"message": "Document processed successfully"}
-        #what hapened to the document? The document is processed and its text is extracted, chunked, embedded, and stored in the vector store for later retrieval. 
-        # The original file is then deleted from the temporary location. How long is the file stored? 
-        # The file is stored temporarily during the processing of the upload request and is deleted immediately after the vector store is 
-        # updated with the new document's chunks and embeddings.
+        if should_queue:
+            remove_temp_file = False
+            job_id = enqueue_job(
+                _process_upload_job,
+                file_path,
+                tenant_id,
+                collection_id,
+                document_id,
+                file.filename,
+                document_date,
+                author,
+                tag,
+                source_system,
+            )
+            logger.info(
+                "Queued '%s' for background ingestion (job=%s, tenant=%s collection=%s document=%s, size=%d bytes).",
+                file.filename,
+                job_id,
+                tenant_id,
+                collection_id,
+                document_id,
+                file_size,
+            )
+            response = {
+                "message": "Document processing started in the background",
+                "job_id": job_id,
+                "status": "queued",
+            }
+            slo_metrics.record_request(time.monotonic() - request_started_at, success=True)
+            return response
+
+        result = _process_upload_job(
+            file_path,
+            tenant_id,
+            collection_id,
+            document_id,
+            file.filename,
+            document_date,
+            author,
+            tag,
+            source_system,
+        )
+        slo_metrics.record_request(time.monotonic() - request_started_at, success=True)
+        return result
+    except Exception:
+        slo_metrics.record_request(time.monotonic() - request_started_at, success=False)
+        raise
+    finally:
+        if remove_temp_file and os.path.exists(file_path):
+            os.remove(file_path)
 
 
 @app.post("/ask", response_model=AnswerResponse)
@@ -141,6 +267,41 @@ async def ask_question(req: QuestionRequest):
         return {"answer": "No document uploaded yet."}
 
     logger.info("Question received: %s", req.question)
-    answer = generate_answer(req.question, vector_store)
+    with vector_store_lock:
+        answer = generate_answer(
+            req.question,
+            vector_store,
+            tenant_id=req.tenant_id,
+            collection_id=req.collection_id,
+            document_id=req.document_id,
+            document_date=req.document_date,
+            author=req.author,
+            tag=req.tag,
+            source_system=req.source_system,
+        )
     logger.debug("Answer generated (%d chars).", len(answer))
     return {"answer": answer}
+
+
+@app.get("/ingestion-jobs/{job_id}")
+async def get_ingestion_job(job_id: str):
+    job = get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return job
+
+
+@app.get("/metrics")
+async def get_metrics():
+    return slo_metrics.snapshot()
+
+
+@app.post("/feedback", response_model=FeedbackResponse)
+async def submit_feedback(req: FeedbackRequest):
+    feedback_id = feedback_store.add_feedback(req.model_dump())
+    return {"feedback_id": feedback_id, "status": "recorded"}
+
+
+@app.get("/feedback/summary")
+async def feedback_summary():
+    return feedback_store.summary()

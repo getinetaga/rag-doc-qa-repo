@@ -292,16 +292,16 @@ This repository now includes several supporting documentation files:
 
 | File | Purpose |
 |---|---|
-| `Test Plan.md` | detailed testing approach |
-| `DevOps.md` | deployment and operational strategy |
-| `AI_Integration.md` | AI implementation details |
-| `Software_Quality_Management.md` | quality management and implementation |
-| `Docker_Jenkins_Implementation.md` | Docker and Jenkins implementation guide |
+| `docs/project-management/Test Plan.md` | detailed testing approach |
+| `docs/project-management/DevOps.md` | deployment and operational strategy |
+| `docs/project-management/AI_Integration.md` | AI implementation details |
+| `docs/project-management/Software_Quality_Management.md` | quality management and implementation |
+| `docs/project-management/Docker_Jenkins_Implementation.md` | Docker and Jenkins implementation guide |
 
 ---
 
 ## 9. How to Convert `.md` Files into Word Documents
-You can convert project Markdown files such as `README.md`, `Test Plan.md`, or `DevOps.md` into Microsoft Word documents in several easy ways.
+You can convert project Markdown files such as `README.md`, `docs/project-management/Test Plan.md`, or `docs/project-management/DevOps.md` into Microsoft Word documents in several easy ways.
 
 ### Option 1 — Open in VS Code and copy into Microsoft Word
 **Steps:**
@@ -328,16 +328,16 @@ This is the best option when you want cleaner headings, tables, and structure.
 2. Run one of the commands below:
 
 ```bash
-pandoc "General Notes.md" -o "General Notes.docx"
-pandoc "Test Plan.md" -o "Test Plan.docx"
-pandoc "DevOps.md" -o "DevOps.docx"
+pandoc "docs/project-management/General Notes.md" -o "General Notes.docx"
+pandoc "docs/project-management/Test Plan.md" -o "Test Plan.docx"
+pandoc "docs/project-management/DevOps.md" -o "DevOps.docx"
 ```
 
 **Steps to convert multiple documentation files:**
 ```bash
-pandoc "AI_Integration.md" -o "AI_Integration.docx"
-pandoc "Software_Quality_Management.md" -o "Software_Quality_Management.docx"
-pandoc "Docker_Jenkins_Implementation.md" -o "Docker_Jenkins_Implementation.docx"
+pandoc "docs/project-management/AI_Integration.md" -o "AI_Integration.docx"
+pandoc "docs/project-management/Software_Quality_Management.md" -o "Software_Quality_Management.docx"
+pandoc "docs/project-management/Docker_Jenkins_Implementation.md" -o "Docker_Jenkins_Implementation.docx"
 ```
 
 ### Option 3 — Use Microsoft Word directly
@@ -386,4 +386,4 @@ This project combines:
 - PostgreSQL + pgvector or FAISS for retrieval,
 - and CI/CD/quality documentation for maintainability.
 
-This `General Notes.md` file is meant to help anyone quickly understand **what the files do, how to use them, what technologies are involved, and what the key acronyms mean**.
+This `docs/project-management/General Notes.md` file is meant to help anyone quickly understand **what the files do, how to use them, what technologies are involved, and what the key acronyms mean**.

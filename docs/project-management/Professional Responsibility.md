@@ -153,6 +153,7 @@ We aim to reduce avoidable bias and support accessible usage patterns so the sys
 - Ensure UI components support keyboard navigation and readable contrast.
 - Use clear language in prompts, warnings, and errors.
 - Avoid design patterns that exclude users based on language, disability, or technical background.
+- Accessibility Requirement: The system shall comply with Section 508 and WCAG 2.1 Level AA requirements. All user interface components shall be operable via keyboard, provide visible focus indicators, maintain logical tab order, and support standard keyboard interactions. Text and user interface elements shall meet minimum color contrast ratios of 4.5:1 for normal text and 3:1 for large text and controls. Accessibility compliance shall be verified through automated scanning and manual keyboard testing prior to deployment.
 
 ## Operational Governance
 

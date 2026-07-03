@@ -42,17 +42,19 @@ def extract_text(file_path: str) -> str:
         raise FileNotFoundError(f"File not found: {file_path}")
     logger.info("Extracting text from '%s'", path.name)
     _t0 = time.monotonic()
-# Determine file type by extension and call the appropriate extractor
+
+    # Determine file type by extension and call the appropriate extractor.
     suffix = path.suffix.lower()
-    if suffix == ".pdf":# pdfplumber can handle many PDFs but may fail on scanned/image-based ones
+    if suffix == ".pdf":
         result = extract_pdf(path)
     elif suffix == ".docx":
         result = extract_docx(path)
     elif suffix == ".txt":
         result = extract_txt(path)
     else:
-# If we reach here, the file type is unsupported
+        # If we reach here, the file type is unsupported.
         raise ValueError(f"Unsupported file type: {suffix}")
+
     logger.info(
         "Extraction complete: '%s' — %d chars in %.2fs",
         path.name, len(result), time.monotonic() - _t0,
@@ -111,5 +113,5 @@ def extract_txt(path: Path, encodings: Optional[list] = None) -> str:
     # If all decodes fail, re-raise the last error for visibility
     if last_exc:
         raise last_exc
+
     return ""
- # The above functions can be extended to support more formats (e.g., .xlsx, .pptx)

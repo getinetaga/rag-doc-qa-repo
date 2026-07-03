@@ -21,14 +21,9 @@ st.title("📊 Retrieval Performance Dashboard")
 
 # -------------------------
 # Sample evaluation results
-# (Replace with real data later),Where to get real data?
-#  You would replace the synthetic/sample data with real evaluation outputs from your retrieval evaluation pipeline.
-#  This could be done by running your evaluation scripts and outputting the metrics to a file (e.g., JSON, CSV) 
-# that this dashboard can read, or by integrating this dashboard directly into your evaluation code to pass the metrics
+# Replace these with real evaluation outputs from your retrieval pipeline.
 # -------------------------
 Ks = [1, 3, 5, 10]
-# These are the different values of K for which Precision@K and Recall@K are calculated. 
-# For example, K=5 means that we are evaluating the precision and recall of the top 5 retrieved items.
 precision_scores = [0.82, 0.78, 0.74, 0.65]
 recall_scores = [0.40, 0.62, 0.75, 0.88]
 topk_accuracy = 0.92

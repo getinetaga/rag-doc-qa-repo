@@ -375,10 +375,10 @@ The following documents support software quality in this project:
 
 | Document | Purpose |
 |---|---|
-| `Test Plan.md` | defines detailed testing strategy |
+| `docs/project-management/Test Plan.md` | defines detailed testing strategy |
 | test execution reports | capture cycle outcome, defects, coverage, and sign-off recommendation |
-| `DevOps.md` | defines deployment and operations quality support |
-| `AI_Integration.md` | defines AI behavior and integration controls |
+| `docs/project-management/DevOps.md` | defines deployment and operations quality support |
+| `docs/project-management/AI_Integration.md` | defines AI behavior and integration controls |
 | `README.md` | developer and run guidance |
 
 ---

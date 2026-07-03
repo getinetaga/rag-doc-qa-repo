@@ -12,9 +12,15 @@ import pytest
 from app import config, rag
 
 
+@pytest.fixture(autouse=True)
+def clear_rag_caches():
+    rag._clear_caches()
+
+
 class DummyVS:
     def __init__(self, texts):
         self._texts = texts
+        self.revision = 1
 
     def search(self, query_embedding, top_k=5):
         # Return the stored texts up to top_k
@@ -204,3 +210,175 @@ def test_generate_answer_rejects_partial_term_overlap(monkeypatch):
 
     assert out == rag.NO_RELEVANT_INFO_RESPONSE
     assert called["openai"] is False
+
+
+def test_rerank_context_chunks_promotes_more_relevant_chunk():
+    chunks = [
+        "[Section 1: Overview] This part discusses deployment and packaging.",
+        "[Section 2: Retrieval] Retrieval reranking improves relevance quality for question answering.",
+        "[Section 3: Appendix] Miscellaneous notes.",
+    ]
+
+    ranked = rag._rerank_context_chunks("How does retrieval reranking improve relevance?", chunks)
+
+    assert ranked[0].startswith("[Section 2: Retrieval]")
+    assert ranked[-1].startswith("[Section 3: Appendix]")
+
+
+def test_generate_answer_uses_response_cache_for_repeated_question(monkeypatch):
+    monkeypatch.setattr(config, "LLM_PROVIDER", "openai")
+
+    calls = {"embed": 0, "search": 0, "provider": 0}
+
+    def fake_embed(texts):
+        calls["embed"] += 1
+        return [[0.1, 0.2, 0.3]]
+
+    class CountingVS:
+        revision = 1
+
+        def search(self, query_embedding, top_k=5, source_document=None, filters=None):
+            calls["search"] += 1
+            return ["[Section 1: Introduction] Python is the main topic."]
+
+    class FakeClient:
+        class responses:
+            @staticmethod
+            def create(model, input, temperature=0):
+                calls["provider"] += 1
+                return types.SimpleNamespace(output_text="Python is the main topic.")
+
+    monkeypatch.setattr(rag, "embed_text", fake_embed)
+    monkeypatch.setattr(rag, "_get_openai_client", lambda: FakeClient())
+
+    vs = CountingVS()
+    first = rag.generate_answer("What is the document about?", vs)
+    second = rag.generate_answer("What is the document about?", vs)
+
+    assert first == second
+    assert calls["embed"] == 1
+    assert calls["search"] == 1
+    assert calls["provider"] == 1
+
+
+def test_generate_answer_reuses_retrieval_cache_for_equivalent_embeddings(monkeypatch):
+    monkeypatch.setattr(config, "LLM_PROVIDER", "openai")
+
+    calls = {"embed": 0, "search": 0, "provider": 0}
+
+    def fake_embed(texts):
+        calls["embed"] += 1
+        return [[0.4, 0.5, 0.6]]
+
+    class CountingVS:
+        revision = 1
+
+        def search(self, query_embedding, top_k=5, source_document=None, filters=None):
+            calls["search"] += 1
+            return ["[Section 1: Introduction] Python is the main topic."]
+
+    class FakeClient:
+        class responses:
+            @staticmethod
+            def create(model, input, temperature=0):
+                calls["provider"] += 1
+                return types.SimpleNamespace(output_text="Python is the main topic.")
+
+    monkeypatch.setattr(rag, "embed_text", fake_embed)
+    monkeypatch.setattr(rag, "_get_openai_client", lambda: FakeClient())
+
+    vs = CountingVS()
+    first = rag.generate_answer("What is the document about?", vs)
+    second = rag.generate_answer("Tell me about the document.", vs)
+
+    assert first == second
+    assert calls["embed"] == 2
+    assert calls["search"] == 1
+    assert calls["provider"] == 2
+
+
+def test_generate_answer_uses_collection_scope_across_multiple_documents(monkeypatch):
+    monkeypatch.setattr(config, "LLM_PROVIDER", "openai")
+    monkeypatch.setattr(rag, "embed_text", lambda texts: [[0.2, 0.3, 0.4]])
+
+    class KnowledgeSpaceVS:
+        revision = 1
+
+        def search(self, query_embedding, top_k=5, source_document=None, filters=None):
+            assert filters is not None
+            assert filters.get("collection_id") == "project-alpha"
+            return [
+                "[Doc A: Planning] Project Alpha defines the roadmap and milestones.",
+                "[Doc B: Delivery] Project Alpha also includes the deployment checklist.",
+            ]
+
+    class FakeClient:
+        class responses:
+            @staticmethod
+            def create(model, input, temperature=0):
+                return types.SimpleNamespace(output_text="Project Alpha defines the roadmap and milestones.")
+
+    monkeypatch.setattr(rag, "_get_openai_client", lambda: FakeClient())
+
+    vs = KnowledgeSpaceVS()
+    out = rag.generate_answer(
+        "What does Project Alpha include?",
+        vs,
+        tenant_id="default",
+        collection_id="project-alpha",
+    )
+
+    assert "Project Alpha defines the roadmap and milestones." in out
+    assert "References:" in out
+    assert "Doc A: Planning" in out
+    assert "Doc B: Delivery" in out
+
+
+def test_generate_answer_applies_advanced_metadata_filters(monkeypatch):
+    monkeypatch.setattr(config, "LLM_PROVIDER", "openai")
+    monkeypatch.setattr(rag, "embed_text", lambda texts: [[0.2, 0.3, 0.4]])
+
+    captured = {}
+
+    class FilteredVS:
+        revision = 1
+
+        def search(self, query_embedding, top_k=5, source_document=None, filters=None):
+            captured["source_document"] = source_document
+            captured["filters"] = dict(filters or {})
+            return [
+                "[Doc: Metadata] Source system and tags are included in retrieval metadata.",
+            ]
+
+    class FakeClient:
+        class responses:
+            @staticmethod
+            def create(model, input, temperature=0):
+                return types.SimpleNamespace(
+                    output_text="Source system and tags are included in retrieval metadata."
+                )
+
+    monkeypatch.setattr(rag, "_get_openai_client", lambda: FakeClient())
+
+    vs = FilteredVS()
+    out = rag.generate_answer(
+        "What metadata filters are active?",
+        vs,
+        tenant_id="tenant-a",
+        collection_id="project-alpha",
+        document_id="doc-01",
+        document_date="2026-07-01",
+        author="Getinet Aga",
+        tag="release-notes",
+        source_system="confluence",
+    )
+
+    assert "retrieval metadata" in out.lower()
+    assert captured["source_document"] == "doc-01"
+    assert captured["filters"]["tenant_id"] == "tenant-a"
+    assert captured["filters"]["collection_id"] == "project-alpha"
+    assert captured["filters"]["document_id"] == "doc-01"
+    assert captured["filters"]["document_date"] == "2026-07-01"
+    assert captured["filters"]["author"] == "Getinet Aga"
+    assert captured["filters"]["tag"] == "release-notes"
+    assert captured["filters"]["source_system"] == "confluence"

@@ -85,6 +85,9 @@ if LLM_PROVIDER == "huggingface":
 else:
 	LLM_MODEL = OPENAI_LLM_MODEL
 
+# Embedding vector size used by local sentence-transformers model.
+EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", "384"))
+
 # Chunking controls: number of characters per chunk and overlap in characters.
 # These are used by `app/chunking.py` to split documents into retrievable pieces.
 CHUNK_SIZE = 800
@@ -93,9 +96,28 @@ CHUNK_OVERLAP = 100
 # Number of top similar chunks to retrieve from the vector store for context.
 TOP_K = 5
 
+# Number of candidate chunks to fetch before reranking. The reranker keeps
+# the best TOP_K chunks after reordering by question/context relevance.
+RETRIEVAL_RERANK_POOL_SIZE = int(os.getenv("RETRIEVAL_RERANK_POOL_SIZE", str(max(TOP_K * 3, TOP_K + 5))))
+
+# Horizontal scaling / service isolation controls.
+# API_WORKERS governs the FastAPI worker count in containerized deployments.
+# The optional service URLs let the API route retrieval and inference to
+# dedicated services backed by a shared persistent vector store.
+API_WORKERS = int(os.getenv("API_WORKERS", "1"))
+RETRIEVAL_SERVICE_URL = os.getenv("RETRIEVAL_SERVICE_URL", "").rstrip("/")
+INFERENCE_SERVICE_URL = os.getenv("INFERENCE_SERVICE_URL", "").rstrip("/")
+
+# Large uploads are pushed into an asynchronous background job when they
+# exceed this size (in bytes). Set to 0 to process all uploads asynchronously.
+ASYNC_INGESTION_MIN_BYTES = int(os.getenv("ASYNC_INGESTION_MIN_BYTES", "200000"))
+
 # Vector database backend selection.
-# Supported values: 'faiss' (default), 'pgvector', or 'hybrid'.
-VECTOR_DB_BACKEND = os.getenv("VECTOR_DB_BACKEND", "faiss").lower()
+# Supported values: 'faiss', 'pgvector', or 'hybrid'.
+# Default behavior: prefer persistent pgvector when a DSN is configured,
+# otherwise fall back to local in-memory FAISS.
+_default_vector_backend = "pgvector" if os.getenv("PGVECTOR_DSN") else "faiss"
+VECTOR_DB_BACKEND = os.getenv("VECTOR_DB_BACKEND", _default_vector_backend).lower()
 
 # PostgreSQL / pgvector settings used when VECTOR_DB_BACKEND is 'pgvector'
 # or 'hybrid'. Example:

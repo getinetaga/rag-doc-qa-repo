@@ -110,7 +110,13 @@ Notes:
 	- `rag.py` — retrieval + LLM orchestration (OpenAI Responses / HF)
 	- `config.py` — environment and configuration helpers
 	- `streamlit_demo.py` — in-process demo UI
+- `docs/` — project documentation
+	- `architecture.md` — architecture and flow details
+	- `projectOverview.md` — consolidated project overview
+	- `project-management/` — governance and implementation docs (test plan, DevOps, quality, AI integration)
 - `tests/` — pytest suite for API, ingestion, and RAG pipeline
+- `samples/` — sample input artifacts for experiments and local runs
+- `prototypes/` — prototype assets (e.g., UI proof-of-concepts)
 - `requirements.txt` — Python deps
 - `Jenkinsfile` — CI pipeline example
 
