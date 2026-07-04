@@ -1,5 +1,5 @@
-# [Your Full Name]
-[City, Country] | [Phone Number] | [Email Address] | [LinkedIn URL] | [GitHub URL]
+# Getinet Aga
+Maryland | 301.592.7167 | Jebessa2030@gmail.com |https://www.linkedin.com/in/g-aga-a24b92ab| https://github.com/getinetaga/ 
 
 ## Professional Summary
 AI/ML-focused software engineer with hands-on experience building and production-hardening a Retrieval-Augmented Generation (RAG) document Q&A platform using FastAPI, Streamlit, vector search, and modern DevOps workflows. Strong background in backend API design, scalable retrieval/inference architecture, automated testing, and observability. Proven ability to turn roadmap goals into shipped features with measurable reliability and quality outcomes.
@@ -16,7 +16,7 @@ AI/ML-focused software engineer with hands-on experience building and production
 
 ## Project Experience
 ### RAG Document Q&A Platform | AI Engineering Project
-[GitHub Repository URL]
+https://github.com/getinetaga/rag-doc-qa-repo.git
 
 - Designed and implemented an end-to-end RAG pipeline for document ingestion, chunking, embedding, vector indexing, retrieval, and answer generation.
 - Built robust FastAPI endpoints for document upload, question answering, ingestion job tracking, metrics reporting, and user feedback capture.
@@ -37,12 +37,16 @@ AI/ML-focused software engineer with hands-on experience building and production
 - Strengthened maintainability through modular service design, clear schemas, and comprehensive tests.
 
 ## Education
-[Degree Title], [Major]  
-[University Name], [Graduation Year]
+Masters , Software Engineering 
+UMGC, 2024
+Professiona Degree, GIS 
+UMD,2013 
 
-## Certifications (Optional)
-- [Relevant Certification, e.g., AWS Cloud Practitioner]
-- [Relevant Certification, e.g., Machine Learning Specialization]
+## Certifications 
+- PMI Ceritified PMP 
+- USII Certified AI Engineer
+- ASTQP Certified Foundation Level Software Tester
+
 
 ## Additional Information
 - Open to roles in AI Engineering, Machine Learning Engineering, Backend Engineering, and Platform Engineering.

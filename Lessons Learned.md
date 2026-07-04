@@ -1,6 +1,6 @@
 # Intelligent Document QA (RAG): End-to-End Architecture, Implementation, and Insights
 
-Date: 2026-07-02  
+Date: 2026-07-03  
 Audience: Technical and non-technical readers
 
 ## Project Overview
@@ -239,7 +239,8 @@ The app supports two retrieval modes:
 |---|---|---|---|---|
 | /upload | POST (multipart) | file (pdf/docx/txt/images) | {"message": "Document processed successfully"} | Build retrieval index from uploaded file |
 | /upload-google-doc | POST (JSON) | {"google_doc_url": "..."} | {"message": "Document processed successfully"} | Build retrieval index from shared Google Docs content |
-| /ask | POST (JSON) | {"question": "..."} | {"answer": "..."} | Return answer grounded in indexed content |
+| /ask | POST (JSON) | {"question": "..."} | {"answer": "...", "question_domain": "..."} | Return answer grounded in indexed content and classified by question domain |
+| /question-domains | GET | None | {"domains": [...]} | Return supported question-domain taxonomy for QA evaluation |
 
 ### Request and Response Schemas
 
@@ -249,10 +250,11 @@ class QuestionRequest(BaseModel):
 
 class AnswerResponse(BaseModel):
     answer: str
+    question_domain: str | None = None
 ```
 
 - QuestionRequest input: natural-language user question.
-- AnswerResponse output: generated answer text (optionally with references).
+- AnswerResponse output: generated answer text plus question-domain classification used for analytics and evaluation.
 
 ## Key Functions and Code Explanations
 
@@ -583,7 +585,7 @@ Question:
 ### Test Types
 
 - Unit tests for ingestion, vector store helpers, and RAG logic.
-- API tests for /upload and /ask endpoint behavior.
+- API tests for /upload, /upload-google-doc, /ask, and /question-domains endpoint behavior.
 - Behavior tests for grounding and fallback rules.
 
 ### Testing Approach
@@ -641,6 +643,8 @@ Implemented in [app/main.py](app/main.py), [app/rag.py](app/rag.py), and [app/re
 Implemented in [app/schemas.py](app/schemas.py), [app/main.py](app/main.py), [app/rag.py](app/rag.py), and [app/retrieval_service.py](app/retrieval_service.py): advanced retrieval filters now support `document_date`, `author`, `tag`, and `source_system`.
 Implemented in [app/schemas.py](app/schemas.py), [app/main.py](app/main.py), and [app/feedback_store.py](app/feedback_store.py): human feedback capture now supports thumbs up/down and correction-loop entries with a summary endpoint for continuous quality analysis.
 Implemented in [app/ingestion.py](app/ingestion.py), [app/main.py](app/main.py), [app/schemas.py](app/schemas.py), and [app/streamlit_demo.py](app/streamlit_demo.py): multimodal ingestion now supports image OCR and shared Google Docs URL indexing.
+Implemented in [app/rag.py](app/rag.py), [app/main.py](app/main.py), [app/schemas.py](app/schemas.py), and [tests/test_api.py](tests/test_api.py): question-domain taxonomy and runtime classification are now exposed through `/ask` responses and the `/question-domains` endpoint.
+Implemented in [app/rag.py](app/rag.py) and [tests/test_rag_pipeline.py](tests/test_rag_pipeline.py): relevance guardrails now handle high-signal single-term overlaps better, improving answer accuracy for valid short questions while preserving hallucination controls.
 
 ## Recommendations: 
 
