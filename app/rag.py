@@ -955,22 +955,19 @@ def generate_answer(
     )
     slo_metrics.record_retrieval_quality(question, context_chunks, _retrieval_quality_score(question, context_chunks))
 
-    if not _has_relevant_context(question, context_chunks):
+    if not context_chunks:
         _cache_set(_RESPONSE_CACHE, response_cache_key, NO_RELEVANT_INFO_RESPONSE, _RESPONSE_CACHE_MAX_SIZE)
         slo_metrics.record_request(time.monotonic() - request_started_at, success=True)
         return NO_RELEVANT_INFO_RESPONSE
 
     context = "\n\n".join(context_chunks)
 
-    prompt = f""" 
-Answer the question using ONLY the context below.
-If the answer is not supported by the context, return exactly:
+    prompt = f"""Answer the question using ONLY the information provided in the context below.
+You may summarize, paraphrase, and synthesize information from the context to form your answer.
+If the context does not contain enough information to answer the question at all, return exactly:
 "{NO_RELEVANT_INFO_RESPONSE}"
-Do not use outside knowledge.
-Do not infer facts that are not explicitly supported by the context.
-Only prefix with "{EXTERNAL_RESPONSE_PREFIX}" if you are explicitly unable to stay within the provided context.
-At the end of the answer, include a `References:` line citing the relevant
-bracketed section labels from the context.
+Do not use outside knowledge or facts not present in the context.
+At the end of your answer, include a `References:` line citing the relevant bracketed section labels from the context.
 
 Context:
 {context}
@@ -988,7 +985,14 @@ Question:
     try:
         answer = _generate_from_prompt(prompt)
         logger.info("Answer generated in %.2fs.", time.monotonic() - _t0)
-        final_answer = _finalize_answer(answer, question, context_chunks)
+        # Trust the LLM response; it was instructed to return NO_RELEVANT_INFO_RESPONSE
+        # when context is insufficient. Keyword-based grounding checks cause false
+        # negatives when the LLM correctly paraphrases or uses synonyms of context terms.
+        cleaned = str(answer).strip() or NO_RELEVANT_INFO_RESPONSE
+        if cleaned == NO_RELEVANT_INFO_RESPONSE or cleaned.lower().startswith(EXTERNAL_RESPONSE_PREFIX.lower()):
+            final_answer = cleaned
+        else:
+            final_answer = _append_references(cleaned, context_chunks)
         _cache_set(_RESPONSE_CACHE, response_cache_key, final_answer, _RESPONSE_CACHE_MAX_SIZE)
         slo_metrics.record_request(time.monotonic() - request_started_at, success=True)
         return final_answer
