@@ -1,6 +1,8 @@
 import streamlit as st
 import requests
 import time
+import re
+from pathlib import Path
 
 # Configure page
 st.set_page_config(
@@ -66,6 +68,14 @@ if 'process_status' not in st.session_state:
     st.session_state.process_status = None
 if 'question_error' not in st.session_state:
     st.session_state.question_error = None
+if 'document_id' not in st.session_state:
+    st.session_state.document_id = ""
+
+
+def _derive_document_id(filename: str) -> str:
+    stem = Path(filename or "document").stem
+    slug = re.sub(r"[^A-Za-z0-9_-]+", "_", stem).strip("_").lower()
+    return slug or "document"
 
 
 def on_file_change() -> None:
@@ -74,6 +84,7 @@ def on_file_change() -> None:
         st.session_state.document_uploaded = False
         st.session_state.document_name = ""
         st.session_state.document_size_kb = 0.0
+        st.session_state.document_id = ""
         st.session_state.chat_history = []
     st.session_state.process_status = None
     st.session_state.question_error = None
@@ -90,13 +101,20 @@ def process_document() -> None:
         return
 
     try:
+        document_id = _derive_document_id(uploaded_file.name)
         files = {"file": (uploaded_file.name, uploaded_file.getvalue(), uploaded_file.type)}
-        response = requests.post(f"{API_URL}/upload", files=files, timeout=60)
+        data = {
+            "tenant_id": "default",
+            "collection_id": "default",
+            "document_id": document_id,
+        }
+        response = requests.post(f"{API_URL}/upload", files=files, data=data, timeout=60)
 
         if response.status_code == 200:
             st.session_state.document_uploaded = True
             st.session_state.document_name = uploaded_file.name
             st.session_state.document_size_kb = uploaded_file.size / 1024
+            st.session_state.document_id = document_id
             st.session_state.chat_history = []
             st.session_state.process_status = ("success", "Document processed successfully!")
             st.session_state.question_error = None
@@ -122,7 +140,16 @@ def submit_question() -> None:
         return
 
     try:
-        response = requests.post(f"{API_URL}/ask", json={"question": question}, timeout=60)
+        response = requests.post(
+            f"{API_URL}/ask",
+            json={
+                "question": question,
+                "tenant_id": "default",
+                "collection_id": "default",
+                "document_id": st.session_state.document_id or "default",
+            },
+            timeout=60,
+        )
 
         if response.status_code == 200:
             answer = response.json().get("answer", "")

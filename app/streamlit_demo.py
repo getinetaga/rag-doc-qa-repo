@@ -23,7 +23,7 @@ import streamlit as st
 # Pipeline building blocks (local package modules)
 from app.chunking import chunk_text
 from app.embeddings import embed_text
-from app.ingestion import extract_text
+from app.ingestion import extract_google_doc_text, extract_text
 from app.rag import generate_answer
 from app.vector_store import VectorStore
 
@@ -87,11 +87,13 @@ with col1:
     # key= lets on_change read st.session_state.uploaded_file_widget;
     # on_change resets the index whenever the selected file changes.
     uploaded_file = st.file_uploader(
-        "Upload a PDF, DOCX or TXT file",
-        type=["pdf", "docx", "txt"],
+        "Upload a PDF, DOCX, TXT, or image file",
+        type=["pdf", "docx", "txt", "png", "jpg", "jpeg", "bmp", "tiff", "webp", "gif"],
         key="uploaded_file_widget",
         on_change=on_file_change,
     )
+
+    google_doc_url = st.text_input("Or provide a Google Docs URL")
 
     if uploaded_file is not None:
         st.info(f"Selected file: {uploaded_file.name} — {uploaded_file.size/1024:.1f} KB")
@@ -131,6 +133,24 @@ with col1:
                 except Exception as e:
                     # Surface any processing errors to the user
                     st.error(f"Processing failed: {e}")
+
+    if google_doc_url and st.button("🌐 Process Google Doc"):
+        with st.spinner("Fetching Google Doc and indexing content..."):
+            try:
+                text = extract_google_doc_text(google_doc_url)
+                chunks = chunk_text(text)
+                embeddings = embed_text(chunks)
+
+                vs = VectorStore(dim=len(embeddings[0]))
+                vs.add(embeddings, chunks)
+
+                st.session_state.vector_store = vs
+                st.session_state.doc_name = google_doc_url
+                st.session_state.chat_history = []
+
+                st.success(f"✅ Google Doc indexed using `{getattr(vs, 'backend', 'faiss')}`!")
+            except Exception as e:
+                st.error(f"Google Doc processing failed: {e}")
 
     if st.session_state.vector_store:
         st.markdown(f"**Indexed document:** {st.session_state.doc_name}")

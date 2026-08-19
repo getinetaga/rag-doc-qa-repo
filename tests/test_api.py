@@ -51,7 +51,9 @@ def test_ask_without_upload():
     main.vector_store = None
     resp = client.post("/ask", json={"question": "Hello"})
     assert resp.status_code == 200
-    assert resp.json() == {"answer": "No document uploaded yet."}
+    payload = resp.json()
+    assert payload["answer"] == "No document uploaded yet."
+    assert "question_domain" in payload
 
 
 def test_upload_and_ask(monkeypatch):
@@ -277,3 +279,144 @@ def test_ask_passes_advanced_retrieval_filters(monkeypatch):
     assert resp.status_code == 200
     assert resp.json()["answer"] == "Filtered answer"
     assert captured == payload
+
+
+def test_upload_google_doc(monkeypatch):
+    def fake_extract_google_doc_text(url):
+        assert "docs.google.com" in url
+        return "Google doc content"
+
+    def fake_chunk_text(text):
+        assert text == "Google doc content"
+        return ["chunk-a", "chunk-b"]
+
+    def fake_embed_text(chunks):
+        return [[0.1, 0.2, 0.3, 0.4] for _ in chunks]
+
+    class FakeVectorStore:
+        def __init__(self, dim):
+            self.texts = []
+
+        def clear(self, source_document=None, filters=None):
+            self.texts = []
+
+        def add(self, embeddings, texts, source_document=None, metadata_list=None):
+            self.texts.extend(texts)
+
+    monkeypatch.setattr(main, "extract_google_doc_text", fake_extract_google_doc_text)
+    monkeypatch.setattr(main, "chunk_text", fake_chunk_text)
+    monkeypatch.setattr(main, "embed_text", fake_embed_text)
+    monkeypatch.setattr(main, "VectorStore", FakeVectorStore)
+
+    resp = client.post(
+        "/upload-google-doc",
+        json={
+            "google_doc_url": "https://docs.google.com/document/d/test-doc-id/edit",
+            "tenant_id": "tenant-1",
+            "collection_id": "collection-1",
+            "document_id": "doc-google-1",
+        },
+    )
+
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["message"] == "Document processed successfully"
+    assert payload["chunks"] == 2
+
+
+def test_upload_default_document_id_keeps_multiple_files(monkeypatch):
+    def fake_extract_text(path):
+        return "sample text"
+
+    def fake_chunk_text(text):
+        return [text]
+
+    def fake_embed_text(chunks):
+        return [[0.0, 0.1, 0.2, 0.3] for _ in chunks]
+
+    class FakeVectorStore:
+        def __init__(self, dim):
+            self.rows = []
+
+        def clear(self, source_document=None, filters=None):
+            remaining = []
+            for row in self.rows:
+                meta = row["metadata"]
+                if source_document is not None and row.get("source_document") != source_document:
+                    remaining.append(row)
+                    continue
+                if filters and any(str(meta.get(k)) != str(v) for k, v in filters.items()):
+                    remaining.append(row)
+                    continue
+            self.rows = remaining
+
+        def add(self, embeddings, texts, source_document=None, metadata_list=None):
+            for idx, text in enumerate(texts):
+                self.rows.append(
+                    {
+                        "text": text,
+                        "source_document": source_document,
+                        "metadata": (metadata_list or [{}])[idx],
+                    }
+                )
+
+        def search(self, query_embedding, top_k=5, source_document=None, filters=None):
+            output = []
+            for row in self.rows:
+                if source_document is not None and row.get("source_document") != source_document:
+                    continue
+                if filters and any(str(row["metadata"].get(k)) != str(v) for k, v in filters.items()):
+                    continue
+                output.append(row["text"])
+            return output[:top_k]
+
+    monkeypatch.setattr(main, "extract_text", fake_extract_text)
+    monkeypatch.setattr(main, "chunk_text", fake_chunk_text)
+    monkeypatch.setattr(main, "embed_text", fake_embed_text)
+    monkeypatch.setattr(main, "VectorStore", FakeVectorStore)
+
+    r1 = client.post("/upload", files={"file": ("alpha.txt", b"a", "text/plain")})
+    r2 = client.post("/upload", files={"file": ("beta.txt", b"b", "text/plain")})
+
+    assert r1.status_code == 200
+    assert r2.status_code == 200
+    assert len(main.vector_store.rows) == 2
+    assert {row["source_document"] for row in main.vector_store.rows} == {"alpha", "beta"}
+
+
+def test_ask_response_includes_question_domain(monkeypatch):
+    class FakeVectorStore:
+        pass
+
+    main.vector_store = FakeVectorStore()
+
+    def fake_generate_answer(
+        question,
+        vector_store,
+        tenant_id=None,
+        collection_id=None,
+        document_id=None,
+        document_date=None,
+        author=None,
+        tag=None,
+        source_system=None,
+    ):
+        return "Use pgvector for persistence and SQL integrations."
+
+    monkeypatch.setattr(main, "generate_answer", fake_generate_answer)
+
+    resp = client.post("/ask", json={"question": "What is pgvector?"})
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["answer"] == "Use pgvector for persistence and SQL integrations."
+    assert payload["question_domain"] == "definition"
+
+
+def test_question_domains_endpoint_returns_catalog():
+    resp = client.get("/question-domains")
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert "domains" in payload
+    assert isinstance(payload["domains"], list)
+    assert any(item["id"] == "fact_based" for item in payload["domains"])
+    assert any(item["id"] == "conversational_followup" for item in payload["domains"])

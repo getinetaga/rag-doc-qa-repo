@@ -1,20 +1,21 @@
 """Document ingestion utilities.
 
 This module provides helpers to extract plain text from common document
-formats used by the demo: PDF, DOCX, and plain text files. The functions
-here perform basic validation, handle common encoding issues for text
-files, and aim to return a cleaned Unicode string suitable for downstream
-chunking and embedding.
+formats used by the demo: PDF, DOCX, TXT, image files, and Google Docs.
+The functions perform basic validation and return Unicode text suitable
+for downstream chunking and embedding.
 """
 
-import time# Time module is used for measuring the duration of text extraction processes, allowing for logging of how long each extraction takes.
-from pathlib import Path# Path is used for convenient and cross-platform file path handling, such as checking file existence and extracting file extensions.
-from typing import Optional# Optional is used for type hinting to indicate that a function argument can be of a specified type or None.
-import logging# Logging is used to provide informative messages about the progress and any issues encountered during text extraction, which is helpful for debugging and monitoring the application's behavior.
+import logging
+import re
+import time
+from pathlib import Path
+from typing import Optional
+from urllib.parse import parse_qs, urlparse
 
-import pdfplumber# pdfplumber is a library used for extracting text from PDF files. It provides a simple interface to read PDFs and extract text while preserving the layout as much as possible.
-import docx# python-docx is a library used for reading and writing Microsoft Word .docx files. It allows for easy extraction of text from Word documents, 
-#including handling of paragraphs and formatting.
+import docx
+import pdfplumber
+import requests
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +23,7 @@ logger = logging.getLogger(__name__)
 def extract_text(file_path: str) -> str:
     """Extract text from a supported file.
 
-    Supported formats: .pdf, .docx, .txt
+    Supported formats: .pdf, .docx, .txt, image files (.png/.jpg/...)
 
     Args:
         file_path: Path to the file to extract.
@@ -51,6 +52,8 @@ def extract_text(file_path: str) -> str:
         result = extract_docx(path)
     elif suffix == ".txt":
         result = extract_txt(path)
+    elif suffix in {".png", ".jpg", ".jpeg", ".bmp", ".tiff", ".tif", ".webp", ".gif"}:
+        result = extract_image(path)
     else:
         # If we reach here, the file type is unsupported.
         raise ValueError(f"Unsupported file type: {suffix}")
@@ -115,3 +118,68 @@ def extract_txt(path: Path, encodings: Optional[list] = None) -> str:
         raise last_exc
 
     return ""
+
+
+def extract_image(path: Path) -> str:
+    """Extract text from an image file using OCR.
+
+    Requires Pillow and pytesseract at runtime. If they are missing,
+    a clear error is raised so callers know how to enable image support.
+    """
+
+    try:
+        from PIL import Image
+    except ImportError as exc:
+        raise RuntimeError("Pillow is required for image ingestion. Install `Pillow`.") from exc
+
+    try:
+        import pytesseract
+    except ImportError as exc:
+        raise RuntimeError("pytesseract is required for image OCR. Install `pytesseract`.") from exc
+
+    with Image.open(path) as img:
+        # RGB normalization improves OCR consistency across image formats.
+        text = pytesseract.image_to_string(img.convert("RGB"))
+    return text.strip()
+
+
+def extract_google_doc_text(google_doc_url: str, timeout_seconds: int = 20) -> str:
+    """Fetch plain text content from a Google Docs URL.
+
+    Supports shared documents accessible by URL and exports the document
+    as plain text via Google's export endpoint.
+    """
+
+    doc_id = _extract_google_doc_id(google_doc_url)
+    if not doc_id:
+        raise ValueError("Invalid Google Docs URL. Expected a /document/d/<doc_id>/ link.")
+
+    export_url = f"https://docs.google.com/document/d/{doc_id}/export?format=txt"
+    try:
+        response = requests.get(export_url, timeout=timeout_seconds)
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        raise RuntimeError(f"Failed to fetch Google Doc content: {exc}") from exc
+
+    text = response.text.strip()
+    if not text:
+        raise ValueError("Google Doc returned empty content or is not accessible.")
+    return text
+
+
+def _extract_google_doc_id(google_doc_url: str) -> str | None:
+    """Extract a Google Docs document ID from a URL."""
+
+    parsed = urlparse(google_doc_url)
+    if "docs.google.com" not in parsed.netloc:
+        return None
+
+    match = re.search(r"/document/d/([a-zA-Z0-9_-]+)", parsed.path)
+    if match:
+        return match.group(1)
+
+    query_doc_id = parse_qs(parsed.query).get("id", [])
+    if query_doc_id:
+        return query_doc_id[0]
+
+    return None

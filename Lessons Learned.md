@@ -1,13 +1,13 @@
 # Intelligent Document QA (RAG): End-to-End Architecture, Implementation, and Insights
 
-Date: 2026-07-02  
+Date: 2026-07-03  
 Audience: Technical and non-technical readers
 
 ## Project Overview
 
 ### Objective
 
-Build an AI application that allows users to upload documents (PDF, DOCX, TXT), ask questions in natural language, and receive answers grounded in the uploaded content.
+Build an AI application that allows users to upload documents (PDF, DOCX, TXT, images via OCR) and ingest shared Google Docs, ask questions in natural language, and receive answers grounded in indexed content.
 
 ### Business Value
 
@@ -75,8 +75,9 @@ This separation is intentional. It allows document processing and question answe
 - Pydantic schemas define and validate request/response contracts.
 
 2. Ingestion Engine
-- Detects file type and extracts text from PDF, DOCX, and TXT.
+- Detects file type and extracts text from PDF, DOCX, TXT, and image formats.
 - Handles common decoding and parsing edge cases.
+- Supports Google Docs URL ingestion by exporting shared docs as plain text.
 
 3. Chunking Engine
 - Splits long text into overlap-preserving chunks.
@@ -163,6 +164,7 @@ Recommended architecture evolution:
 | Database / Vector Store | FAISS (in-memory), PostgreSQL + pgvector (persistent) | Similarity search over embeddings |
 | AI / ML Frameworks | sentence-transformers, OpenAI SDK, Hugging Face Inference API | Embeddings + LLM answer generation |
 | Data Processing | pdfplumber, python-docx, NumPy | Text extraction and vector handling |
+| Multimodal Ingestion | Pillow, pytesseract, requests | OCR extraction and Google Docs fetch |
 | DevOps | Docker, Jenkins, pytest | Containerization, CI pipeline, testing |
 | Third-party Integrations | OpenAI API, Hugging Face API | External inference services |
 | Cloud Services | Optional (provider-hosted APIs for LLMs) | Managed model inference |
@@ -186,8 +188,8 @@ sequenceDiagram
     participant RAG as RAG Orchestrator
     participant LLM as LLM Provider
 
-    User->>UI: Upload document
-    UI->>API: POST /upload (file)
+    User->>UI: Upload document or provide Google Doc URL
+    UI->>API: POST /upload (file) or POST /upload-google-doc (url)
     API->>Ingest: extract text
     Ingest-->>API: raw text
     API->>Chunk: split into chunks
@@ -235,8 +237,10 @@ The app supports two retrieval modes:
 
 | Endpoint | Method | Input | Output | Purpose |
 |---|---|---|---|---|
-| /upload | POST (multipart) | file (pdf/docx/txt) | {"message": "Document processed successfully"} | Build retrieval index from uploaded document |
-| /ask | POST (JSON) | {"question": "..."} | {"answer": "..."} | Return answer grounded in indexed content |
+| /upload | POST (multipart) | file (pdf/docx/txt/images) | {"message": "Document processed successfully"} | Build retrieval index from uploaded file |
+| /upload-google-doc | POST (JSON) | {"google_doc_url": "..."} | {"message": "Document processed successfully"} | Build retrieval index from shared Google Docs content |
+| /ask | POST (JSON) | {"question": "..."} | {"answer": "...", "question_domain": "..."} | Return answer grounded in indexed content and classified by question domain |
+| /question-domains | GET | None | {"domains": [...]} | Return supported question-domain taxonomy for QA evaluation |
 
 ### Request and Response Schemas
 
@@ -246,10 +250,11 @@ class QuestionRequest(BaseModel):
 
 class AnswerResponse(BaseModel):
     answer: str
+    question_domain: str | None = None
 ```
 
 - QuestionRequest input: natural-language user question.
-- AnswerResponse output: generated answer text (optionally with references).
+- AnswerResponse output: generated answer text plus question-domain classification used for analytics and evaluation.
 
 ## Key Functions and Code Explanations
 
@@ -287,7 +292,7 @@ How it works:
 
 Inputs:
 
-- Multipart file upload (PDF, DOCX, TXT).
+- Multipart file upload (PDF, DOCX, TXT, image files).
 
 Outputs:
 
@@ -580,7 +585,7 @@ Question:
 ### Test Types
 
 - Unit tests for ingestion, vector store helpers, and RAG logic.
-- API tests for /upload and /ask endpoint behavior.
+- API tests for /upload, /upload-google-doc, /ask, and /question-domains endpoint behavior.
 - Behavior tests for grounding and fallback rules.
 
 ### Testing Approach
@@ -637,6 +642,9 @@ Implemented in [docker-compose.yml](docker-compose.yml) and [Dockerfile](Dockerf
 Implemented in [app/main.py](app/main.py), [app/rag.py](app/rag.py), and [app/retrieval_service.py](app/retrieval_service.py): multi-document knowledge spaces now use `collection_id` so several documents can be grouped and queried together at folder/project level.
 Implemented in [app/schemas.py](app/schemas.py), [app/main.py](app/main.py), [app/rag.py](app/rag.py), and [app/retrieval_service.py](app/retrieval_service.py): advanced retrieval filters now support `document_date`, `author`, `tag`, and `source_system`.
 Implemented in [app/schemas.py](app/schemas.py), [app/main.py](app/main.py), and [app/feedback_store.py](app/feedback_store.py): human feedback capture now supports thumbs up/down and correction-loop entries with a summary endpoint for continuous quality analysis.
+Implemented in [app/ingestion.py](app/ingestion.py), [app/main.py](app/main.py), [app/schemas.py](app/schemas.py), and [app/streamlit_demo.py](app/streamlit_demo.py): multimodal ingestion now supports image OCR and shared Google Docs URL indexing.
+Implemented in [app/rag.py](app/rag.py), [app/main.py](app/main.py), [app/schemas.py](app/schemas.py), and [tests/test_api.py](tests/test_api.py): question-domain taxonomy and runtime classification are now exposed through `/ask` responses and the `/question-domains` endpoint.
+Implemented in [app/rag.py](app/rag.py) and [tests/test_rag_pipeline.py](tests/test_rag_pipeline.py): relevance guardrails now handle high-signal single-term overlaps better, improving answer accuracy for valid short questions while preserving hallucination controls.
 
 ## Recommendations: 
 
@@ -669,7 +677,7 @@ Implemented in [app/schemas.py](app/schemas.py), [app/main.py](app/main.py), and
 
 ### 4) Integration and Platform Expansion Components
 
-1. Enterprise connectors: SharePoint, Confluence, Google Drive, OneDrive, Jira, Slack, email archives.
+1. Enterprise connectors: SharePoint, Confluence, Google Drive, OneDrive, Jira, Slack, email archives. (Google Docs URL import implemented as first connector step.)
 2. Event-driven ingestion pipelines from file stores and content management systems.
 3. Webhooks and SDKs for embedding into internal portals and line-of-business apps.
 4. BI and observability integration: Prometheus/Grafana, OpenTelemetry, SIEM feeds.

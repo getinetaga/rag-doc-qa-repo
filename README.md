@@ -2,7 +2,7 @@
 
 This repository demonstrates a small, modular Retrieval-Augmented
 Generation (RAG) pipeline for asking natural-language questions about
-uploaded documents (PDF, DOCX, TXT). It includes:
+uploaded documents (PDF, DOCX, TXT, image OCR) and Google Docs content. It includes:
 
 - A FastAPI backend exposing `/upload` and `/ask` endpoints.
 - An in-process Streamlit demo for local experimentation.
@@ -66,7 +66,8 @@ uvicorn app.main:app --reload
 
 API endpoints:
 
-- POST `/upload` — multipart file upload (pdf/docx/txt). Builds an in-memory index.
+- POST `/upload` — multipart file upload (pdf/docx/txt/images). Builds an in-memory index.
+- POST `/upload-google-doc` — JSON body with a Google Docs URL to fetch and index text.
 - POST `/ask` — JSON body `{ "question": "..." }`, returns `{ "answer": "..." }`.
 
 5. (Alternative) Run the Streamlit in-process demo
@@ -103,7 +104,7 @@ Notes:
 
 - `app/` — application modules
 	- `main.py` — FastAPI app and endpoints
-	- `ingestion.py` — document text extraction helpers (pdf/docx/txt)
+	- `ingestion.py` — document text extraction helpers (pdf/docx/txt/image OCR/google docs)
 	- `chunking.py` — chunk-splitting utilities
 	- `embeddings.py` — SentenceTransformers wrapper (lazy, thread-safe)
 	- `vector_store.py` — minimal FAISS-backed in-memory store

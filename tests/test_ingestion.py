@@ -9,7 +9,7 @@ from pathlib import Path
 import tempfile
 import pytest
 
-from app.ingestion import extract_text
+from app.ingestion import extract_google_doc_text, extract_text
 
 
 def test_extract_txt(tmp_path: Path):
@@ -97,3 +97,26 @@ def test_extract_missing_file_raises_file_not_found(tmp_path: Path):
     missing = tmp_path / "does_not_exist.txt"
     with pytest.raises(FileNotFoundError):
         extract_text(str(missing))
+
+
+def test_extract_google_doc_text(monkeypatch):
+    class FakeResponse:
+        text = "Google Docs content"
+
+        def raise_for_status(self):
+            return None
+
+    def fake_get(url, timeout):
+        assert "export?format=txt" in url
+        assert timeout == 20
+        return FakeResponse()
+
+    monkeypatch.setattr("app.ingestion.requests.get", fake_get)
+
+    out = extract_google_doc_text("https://docs.google.com/document/d/abc123/edit")
+    assert out == "Google Docs content"
+
+
+def test_extract_google_doc_text_invalid_url():
+    with pytest.raises(ValueError, match="Invalid Google Docs URL"):
+        extract_google_doc_text("https://example.com/not-a-google-doc")
