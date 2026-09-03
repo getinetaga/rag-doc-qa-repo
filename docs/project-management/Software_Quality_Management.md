@@ -39,15 +39,19 @@ The core quality objectives are to ensure that the system:
 ## 4. Quality Scope
 
 ### In Scope
-- backend API quality
-- Streamlit user interface quality
-- document ingestion quality
+- backend API quality across all ingestion endpoints (`/upload`, `/upload-google-doc`, `/upload-sharepoint`, `/ingest-database`) and `/ask`
+- Streamlit user interface quality (API-backed and in-process)
+- ingestion quality for every source: files, image OCR, Google Docs, SharePoint (Microsoft Graph), and read-only SQL rows
 - chunking and section labeling quality
-- embedding and vector search quality
+- embedding and vector search quality across FAISS / pgvector / hybrid
+- retrieval reranking, the lexical relevance gate, and the grounding gates
+- response / retrieval cache correctness (staleness on re-index)
+- metadata scoping correctness (tenant / collection / document isolation)
 - PostgreSQL + pgvector integration quality
 - fallback answer quality
+- observability endpoints (`/metrics`, `/feedback`)
 - test quality and regression safety
-- deployment and operational quality
+- deployment and operational quality (single image, 3-service split)
 
 ### Out of Scope
 - enterprise-scale SLA enforcement
@@ -121,13 +125,18 @@ Before any release, the following should be true:
 Quality control focuses on **detecting** defects through validation and measurement.
 
 ### Current Quality Controls
-- `pytest` automated test suite,
-- FastAPI endpoint verification,
-- Streamlit UI validation,
+- `pytest` automated test suite — 76 tests across 7 files:
+  - `test_api.py` (17) — every endpoint, request/response shape, 422 validation
+  - `test_ingestion.py` (14) — file extraction, Google Docs, SharePoint/Graph (mocked)
+  - `test_db_ingestion.py` (16) — SQLite round-trips and the read-only SQL guards
+  - `test_rag_pipeline.py` (15) — retrieval, reranking, relevance/grounding gates, caching, provider fallback
+  - `test_vector_store.py` (8), `test_chunking.py` (4), `test_config.py` (2)
+- external model/network calls stubbed with `monkeypatch` so the suite is hermetic and fast,
+- FastAPI endpoint verification via `TestClient`,
+- Streamlit UI validation (manual),
 - manual usability walkthroughs for primary user journeys,
 - pgvector/PostgreSQL checks,
-- regression testing for section references and duplicate-answer issues,
-- test result and coverage artifacts for regression visibility.
+- regression tests for section references, duplicate answers, and grounding-gate behavior.
 
 ### Key Validation Command
 ```bash
@@ -335,37 +344,50 @@ Methods:
 
 ### API Layer (`app/main.py`)
 Quality focus:
-- request validation,
-- correct upload behavior,
-- correct answer routing,
-- no crashes on invalid states.
+- request validation on every ingestion endpoint (missing SharePoint locator / database query-vs-table → 422, not 500),
+- one shared indexing path so all sources behave identically downstream,
+- correct scoping-field pass-through,
+- no crashes on invalid states (safe `/ask` response when nothing is indexed).
+
+### Ingestion (`app/ingestion.py`, `app/db_ingestion.py`)
+Quality focus:
+- correct text extraction per format and per remote source,
+- temp-file cleanup on every path,
+- SharePoint: token caching, share-URL encoding, unsupported-type rejection, size cap,
+- database: read-only connection, `SELECT`/`WITH`-only filter (fails closed), single-statement, row cap, scheme allowlist.
 
 ### RAG Layer (`app/rag.py`)
 Quality focus:
-- grounded prompts,
-- section references,
-- deduplication,
-- graceful provider fallback.
+- grounded prompts and `References:` from section labels,
+- lexical rerank ordering; relevance gate skips the provider on no overlap,
+- grounding gates downgrade unsupported answers,
+- cache correctness — invalidation on the vector store `revision` bump,
+- graceful provider fallback; correct `auto`-mode selection.
 
 ### Vector Store (`app/vector_store.py`)
 Quality focus:
-- pgvector / FAISS correctness,
+- FAISS / pgvector / hybrid correctness behind one wrapper,
+- metadata-filter and `source_document` scoping,
 - duplicate result reduction,
-- clearing stale data,
-- stable similarity search.
+- clearing stale data on re-index,
+- SQL identifier validation for the pgvector table name.
 
 ### Embeddings (`app/embeddings.py`)
 Quality focus:
-- stable model loading,
+- stable, lock-guarded model loading,
 - valid vector output shape,
 - failure handling.
 
-### UI (`streamlit_app.py`)
+### Services (`app/retrieval_service.py`, `app/inference_service.py`)
 Quality focus:
-- user-friendly upload flow,
-- clear answer display,
-- understandable error messages,
-- consistent question history behavior,
+- HTTP contract parity with the in-process path,
+- behavior identical whether or not the service URLs are set.
+
+### UI (`streamlit_app.py`, `app/streamlit_demo.py`)
+Quality focus:
+- user-friendly ingestion flow for every source,
+- clear answer display and understandable error messages,
+- consistent question-history behavior,
 - predictable event-driven interactions for upload, submit, and clear actions.
 
 ---
@@ -393,13 +415,15 @@ Software quality must improve over time through:
 - better operational dashboards.
 
 ### Recommended Improvements
-- add a dedicated `/health` endpoint,
-- add linting and formatting quality gates,
-- add coverage reporting,
+- add a dedicated `/health` endpoint (separate from `/metrics`),
+- wire `black` / `isort` / `flake8` / `mypy` into CI and add a `pyproject.toml`,
+- add coverage reporting (`pytest --cov`) and JUnit XML output for Jenkins trends,
+- add tests for the pgvector/hybrid backends and the service-split HTTP paths (currently untested),
+- add a concurrency test for the shared `vector_store` lock,
 - standardize test report templates for smoke, regression, and release cycles,
 - add UI automation tests,
-- add performance benchmarks for large files,
-- add source metadata such as file name and page number in references.
+- add performance benchmarks for large files and large result sets,
+- carry `source_document` / page number into `References:`.
 
 ---
 

@@ -15,13 +15,19 @@ The goal is to ensure the application is:
 ## 2. Application Summary
 The application is a Python-based **Retrieval-Augmented Generation (RAG)** system with:
 
-- **FastAPI** backend for `/upload` and `/ask`
-- **Streamlit** web interface
+- **FastAPI** backend — ingestion (`/upload`, `/upload-google-doc`, `/upload-sharepoint`, `/ingest-database`), querying (`/ask`, `/question-domains`), async-job status (`/ingestion-jobs/{id}`), and observability (`/metrics`, `/feedback`, `/feedback/summary`)
+- **Streamlit** interfaces (API-backed `streamlit_app.py`, in-process `app/streamlit_demo.py`, metrics dashboard `app/metrics_dashboard.py`)
 - **Sentence Transformers** for embeddings
-- **FAISS** or **PostgreSQL + pgvector** for vector search
-- **OpenAI** or **Hugging Face** for answer generation
-- **Docker** containerization support
+- **FAISS**, **PostgreSQL + pgvector**, or **hybrid** for vector search
+- **OpenAI**, **Hugging Face**, or **auto** for answer generation
+- an optional **service split** (`app.retrieval_service` :8001, `app.inference_service` :8002) over a shared persistent index
+- an in-process **async ingestion queue** for large uploads
+- **Docker** / **Docker Compose** containerization support
 - **Jenkins** CI pipeline support
+
+### External integrations that need credentials
+- **Microsoft Graph** (SharePoint ingestion) — `SHAREPOINT_TENANT_ID` / `SHAREPOINT_CLIENT_ID` / `SHAREPOINT_CLIENT_SECRET` (Entra ID app, `Sites.Read.All` + `Files.Read.All`).
+- **SQL databases** (`/ingest-database`) — a read-only DSN, per request or via `DB_INGESTION_DSN`. PostgreSQL and SQLite only.
 
 ---
 
@@ -109,23 +115,62 @@ End-user environment.
 ## 6. Configuration Management
 All runtime configuration should be externalized via environment variables.
 
-### Required Variables
+### Core Variables
 ```env
 OPENAI_API_KEY=
 HUGGINGFACE_API_KEY=
-LLM_PROVIDER=openai
-LLM_MODEL=gpt-4o-mini
-VECTOR_DB_BACKEND=pgvector
+LLM_PROVIDER=openai                 # openai | huggingface | auto
+OPENAI_LLM_MODEL=gpt-4o-mini        # LLM_MODEL still accepted as an alias
+HUGGINGFACE_LLM_MODEL=google/flan-t5-base
+VECTOR_DB_BACKEND=pgvector          # faiss | pgvector | hybrid (auto-pgvector when PGVECTOR_DSN is set)
 PGVECTOR_DSN=postgresql://postgres:<password>@localhost:5432/ragdb
 PGVECTOR_TABLE_NAME=rag_embeddings
 PGVECTOR_PRIMARY_SEARCH=pgvector
+```
+
+### Scaling / topology
+```env
+API_WORKERS=1                       # uvicorn worker count in the container
+RETRIEVAL_SERVICE_URL=              # set to route retrieval to app.retrieval_service
+INFERENCE_SERVICE_URL=              # set to route generation to app.inference_service
+ASYNC_INGESTION_MIN_BYTES=200000    # uploads at/above this size go to the background queue (0 = always)
+MAX_UPLOAD_FILE_SIZE_BYTES=209715200
+```
+
+> With `VECTOR_DB_BACKEND=faiss`, the index lives in each worker's memory — an upload on one worker is invisible to `/ask` on another. Run a single worker, or use `pgvector` / `hybrid` (and the service split) for multi-worker deployments.
+
+### SharePoint ingestion
+```env
+SHAREPOINT_TENANT_ID=
+SHAREPOINT_CLIENT_ID=
+SHAREPOINT_CLIENT_SECRET=
+GRAPH_BASE_URL=https://graph.microsoft.com/v1.0     # override for sovereign clouds
+GRAPH_AUTHORITY=https://login.microsoftonline.com
+```
+
+### Database ingestion
+```env
+DB_INGESTION_DSN=                   # optional default DSN; postgresql:// or sqlite:/// only
+DB_INGESTION_MAX_ROWS=5000
+DB_INGESTION_MAX_CELL_CHARS=2000
+DB_INGESTION_STATEMENT_TIMEOUT_MS=15000
+```
+
+### Observability / SLO targets
+```env
+SLO_SERVICE_NAME=rag-doc-qa
+SLO_AVAILABILITY_TARGET=0.99            # min success rate
+SLO_LATENCY_P95_TARGET_SECONDS=3.0      # max p95 request latency
+SLO_LATENCY_P99_TARGET_SECONDS=8.0      # max p99 request latency
+SLO_RETRIEVAL_QUALITY_TARGET=0.6        # min mean retrieval-hit quality
 ```
 
 ### Best Practices
 - never commit real secrets,
 - use `.env` only for local development,
 - use Jenkins credentials / secret managers for CI and production,
-- validate environment variables during startup.
+- validate environment variables during startup,
+- do not blank a variable in `.env` (`FOO=`) — an empty string counts as "set" and shadows the built-in default.
 
 ---
 
@@ -136,14 +181,16 @@ PGVECTOR_PRIMARY_SEARCH=pgvector
 - Install dependencies from `requirements.txt`
 
 ### Containerization
-The repository already includes a `Dockerfile`.
+The repository includes a `Dockerfile` (single image, `uvicorn app.main:app` with `--workers ${API_WORKERS}`, default `1`) and a `docker-compose.yml` that runs three containers from that image: `api` (:8000), `retrieval` (:8001), and `inference` (:8002), wired together with `RETRIEVAL_SERVICE_URL` / `INFERENCE_SERVICE_URL`.
 
 Current build flow:
 ```bash
 docker build -t rag-doc-qa:latest .
+docker compose up          # 3-service split; expects a reachable pgvector DSN
 ```
 
 ### Recommended Improvements
+- add a `.dockerignore` (exclude `.venv`, `__pycache__`, `.git`, caches),
 - pin dependency versions where necessary,
 - add a non-root container user,
 - separate dev and production requirements,
@@ -154,18 +201,17 @@ docker build -t rag-doc-qa:latest .
 ## 8. CI Plan
 The application already contains a `Jenkinsfile` for CI.
 
-### CI Pipeline Stages
-1. **Checkout Source**
-2. **Create Virtual Environment**
-3. **Install Dependencies**
-4. **Run Tests**
-5. **Build Docker Image**
-6. **Publish Artifacts (optional)**
-7. **Deploy to target environment (optional/manual approval)**
+### CI Pipeline Stages (`Jenkinsfile`)
+1. **Setup** — create the virtualenv, upgrade pip, install `requirements.txt`
+2. **Lint & Test** — currently runs `pytest` only (the stage name is aspirational; `black` / `isort` / `flake8` / `mypy` are available in `requirements-dev.txt` but not yet wired in)
+3. **Build Docker Image** — on Unix agents, or Windows with `DOCKER_ON_WINDOWS=true`
+4. **Deploy (Optional)** — placeholder
 
 ### Validation Commands
 ```bash
-python -m pytest -q
+python -m pytest -q            # 76 tests across 7 files
+# aspirational gate, once wired into CI:
+black --check . && isort --check-only . && flake8 && mypy app
 ```
 
 ### CI Success Criteria
@@ -248,17 +294,18 @@ pg_dump -U postgres -d ragdb > ragdb_backup.sql
 ## 11. Monitoring and Observability
 
 ### Application Monitoring
-Monitor:
-- API uptime
-- response times
-- upload errors
-- answer generation failures
-- database connectivity
+The app already exposes runtime signals:
+- `GET /metrics` — a structured SLO report from `app/slo_metrics.py` (in-memory, per process): a p50/p90/p95/p99 latency distribution, availability (success/error rates), throughput, retrieval-hit quality, and an `slo` block scoring each against a target (`SLO_AVAILABILITY_TARGET`, `SLO_LATENCY_P95_TARGET_SECONDS`, `SLO_LATENCY_P99_TARGET_SECONDS`, `SLO_RETRIEVAL_QUALITY_TARGET`) with attainment, an error-budget figure, and an overall `healthy` / `at_risk` / `breached` status
+- `GET /feedback/summary` — thumbs up/down counts and recent corrections (from `app/feedback_store.py`)
+- `GET /ingestion-jobs/{job_id}` — status of a queued large-upload job
+
+Also monitor: API uptime, response times, ingestion errors by source, provider failures, and database connectivity.
 
 ### Key Health Checks
-- `GET /docs` or a dedicated `/health` endpoint
+- `GET /docs` (no dedicated `/health` yet) and `GET /metrics`
 - Streamlit UI availability
-- PostgreSQL connectivity
+- PostgreSQL connectivity (for `pgvector` / `hybrid` and for database ingestion)
+- Microsoft Graph token acquisition (SharePoint ingestion)
 
 ### Logging Requirements
 Log:
@@ -304,12 +351,13 @@ Log:
 ## 13. Reliability and Recovery
 
 ### Failure Scenarios
-- invalid LLM API key
-- quota exceeded
-- PostgreSQL unavailable
-- wrong DB port selected
+- invalid LLM API key / quota exceeded
+- PostgreSQL unavailable or wrong DB port
 - Docker not running
-- corrupted upload or unsupported document
+- corrupted upload or unsupported document type
+- SharePoint: expired/incorrect `SHAREPOINT_*` credentials, or the app lacks read access to the site
+- database ingestion: unreachable DSN, a non-`SELECT` query (rejected), or a query returning no rows
+- multi-worker + `faiss` backend: `/ask` hits a worker with no index ("No document uploaded yet.")
 
 ### Recovery Plan
 | Failure | Recovery Action |
@@ -338,6 +386,7 @@ streamlit run streamlit_app.py
 ### Verify Health
 ```bash
 curl http://127.0.0.1:8000/docs
+curl http://127.0.0.1:8000/metrics
 curl http://127.0.0.1:8501
 ```
 
@@ -375,14 +424,15 @@ python -m pytest -q
 
 ## 16. Future DevOps Improvements
 Recommended enhancements:
-- add a dedicated `/health` endpoint,
-- add linting and formatting checks in CI,
-- add pre-commit hooks,
-- automate database migrations,
-- deploy via Docker Compose or Kubernetes,
-- add centralized monitoring and alerting,
-- add artifact versioning and image tags,
-- separate staging and production secrets.
+- add a dedicated `/health` endpoint (distinct from `/metrics`),
+- wire `black` / `isort` / `flake8` / `mypy` into the Jenkins "Lint & Test" stage and add pre-commit hooks,
+- ship a `pyproject.toml` so the formatters/linters share one config,
+- add a `.dockerignore` and pin the image to a released tag,
+- publish the image to a registry and add a smoke-test stage,
+- export `/metrics` to Prometheus/Grafana instead of in-process only,
+- persist `feedback_store` / `ingestion_jobs` state (currently in-memory) if durability matters,
+- pool PostgreSQL connections for the pgvector backend and retrieval service,
+- separate staging and production secrets; rotate the SharePoint client secret on a schedule.
 
 ---
 

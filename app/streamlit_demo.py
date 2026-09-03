@@ -22,8 +22,13 @@ import streamlit as st
 
 # Pipeline building blocks (local package modules)
 from app.chunking import chunk_text
+from app.db_ingestion import extract_database_text
 from app.embeddings import embed_text
-from app.ingestion import extract_google_doc_text, extract_text
+from app.ingestion import (
+    extract_google_doc_text,
+    extract_sharepoint_text,
+    extract_text,
+)
 from app.rag import generate_answer
 from app.vector_store import VectorStore
 
@@ -94,6 +99,7 @@ with col1:
     )
 
     google_doc_url = st.text_input("Or provide a Google Docs URL")
+    sharepoint_url = st.text_input("Or provide a SharePoint file URL")
 
     if uploaded_file is not None:
         st.info(f"Selected file: {uploaded_file.name} — {uploaded_file.size/1024:.1f} KB")
@@ -151,6 +157,61 @@ with col1:
                 st.success(f"✅ Google Doc indexed using `{getattr(vs, 'backend', 'faiss')}`!")
             except Exception as e:
                 st.error(f"Google Doc processing failed: {e}")
+
+    if sharepoint_url and st.button("🗂️ Process SharePoint file"):
+        with st.spinner("Fetching SharePoint file via Microsoft Graph and indexing..."):
+            try:
+                text = extract_sharepoint_text(sharepoint_url)
+                chunks = chunk_text(text)
+                embeddings = embed_text(chunks)
+
+                vs = VectorStore(dim=len(embeddings[0]))
+                vs.add(embeddings, chunks)
+
+                st.session_state.vector_store = vs
+                st.session_state.doc_name = sharepoint_url
+                st.session_state.chat_history = []
+
+                st.success(
+                    f"✅ SharePoint file indexed using `{getattr(vs, 'backend', 'faiss')}`!"
+                )
+            except Exception as e:
+                st.error(f"SharePoint processing failed: {e}")
+
+    with st.expander("🗄️ Ingest from a SQL database"):
+        db_conn = st.text_input(
+            "Connection string (postgresql://… or sqlite:///path/to.db)",
+            type="password",
+        )
+        db_mode = st.radio("Source", ["Table", "Query"], horizontal=True, key="db_mode")
+        db_table = st.text_input("Table name") if db_mode == "Table" else ""
+        db_query = (
+            st.text_area("Read-only SELECT query") if db_mode == "Query" else ""
+        )
+
+        if st.button("🗄️ Ingest database rows"):
+            with st.spinner("Running read-only query and indexing rows..."):
+                try:
+                    text = extract_database_text(
+                        connection_string=db_conn or None,
+                        table=db_table or None,
+                        query=db_query or None,
+                    )
+                    chunks = chunk_text(text)
+                    embeddings = embed_text(chunks)
+
+                    vs = VectorStore(dim=len(embeddings[0]))
+                    vs.add(embeddings, chunks)
+
+                    st.session_state.vector_store = vs
+                    st.session_state.doc_name = db_table or "database query"
+                    st.session_state.chat_history = []
+
+                    st.success(
+                        f"✅ Database rows indexed using `{getattr(vs, 'backend', 'faiss')}`!"
+                    )
+                except Exception as e:
+                    st.error(f"Database ingestion failed: {e}")
 
     if st.session_state.vector_store:
         st.markdown(f"**Indexed document:** {st.session_state.doc_name}")

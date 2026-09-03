@@ -12,13 +12,16 @@ It explains how artificial intelligence is integrated into the application for:
 - graceful fallback when the external LLM is unavailable.
 
 This plan is based on the current implementation in:
-- `app/main.py`
-- `app/ingestion.py`
+- `app/main.py` — endpoints and the shared indexing path
+- `app/ingestion.py` — uploads, Google Docs, SharePoint (Microsoft Graph)
+- `app/db_ingestion.py` — read-only SQL row serialization
 - `app/chunking.py`
 - `app/embeddings.py`
-- `app/vector_store.py`
-- `app/rag.py`
-- `streamlit_app.py`
+- `app/vector_store.py` — FAISS / pgvector / hybrid
+- `app/rag.py` — retrieval, reranking, relevance/grounding gates, caching, provider fallback
+- `app/retrieval_service.py`, `app/inference_service.py` — optional split topology
+- `app/slo_metrics.py`, `app/feedback_store.py` — observability and feedback
+- `streamlit_app.py`, `app/streamlit_demo.py`
 
 ---
 
@@ -38,15 +41,17 @@ The AI layer should enable the application to:
 The application already follows a **Retrieval-Augmented Generation (RAG)** pattern.
 
 ### High-Level Flow
-1. User uploads a document through **FastAPI** or **Streamlit**.
-2. The system extracts the document text.
-3. The text is split into chunks with section labels.
-4. Each chunk is converted into an embedding vector.
-5. Embeddings are stored in **FAISS** or **PostgreSQL + pgvector**.
-6. When the user asks a question, the question is embedded.
-7. The system retrieves the most relevant chunks.
-8. The LLM generates a grounded answer using the retrieved context.
-9. The answer is returned with `References:` for the relevant document sections.
+1. Content enters through one of the ingestion endpoints — a file upload, a Google Docs URL, a SharePoint file (Microsoft Graph), or the rows of a read-only SQL query — or through Streamlit.
+2. The matching extractor produces plain text.
+3. The text is split into overlapping chunks with inferred section labels.
+4. Each chunk is converted into an embedding vector and tagged with scoping metadata (`tenant_id`, `collection_id`, `document_id`, and optional `document_date` / `author` / `tag` / `source_system`).
+5. Embeddings are stored in **FAISS**, **PostgreSQL + pgvector**, or a **hybrid** mirror of both.
+6. When the user asks a question, the question is embedded and classified into a `question_domain`.
+7. The system retrieves a candidate pool, lexically reranks it, keeps the top `TOP_K`, and applies a lexical relevance gate — if the question and context share too little vocabulary, no LLM call is made.
+8. The LLM (OpenAI, Hugging Face, or `auto`) generates a grounded answer; grounding gates then verify the answer is supported and on-topic before it is returned.
+9. The answer is returned with a `References:` line for the relevant sections, plus the detected `question_domain`. Responses and retrieval results are cached in memory (30-minute TTL).
+
+Retrieval and generation run in-process by default; setting `RETRIEVAL_SERVICE_URL` / `INFERENCE_SERVICE_URL` routes them to standalone services over a shared persistent index.
 
 ---
 
@@ -54,13 +59,16 @@ The application already follows a **Retrieval-Augmented Generation (RAG)** patte
 
 | Component | File | AI Responsibility |
 |---|---|---|
-| Ingestion | `app/ingestion.py` | Extract raw text from TXT, DOCX, and PDF |
-| Chunking | `app/chunking.py` | Break text into retrievable chunks and infer section labels |
+| Ingestion | `app/ingestion.py` | Extract text from uploads (TXT/DOCX/PDF/image OCR), Google Docs, and SharePoint files |
+| Database ingestion | `app/db_ingestion.py` | Serialize the rows of a read-only `SELECT` into indexable text |
+| Chunking | `app/chunking.py` | Break text into overlapping chunks and infer section labels |
 | Embeddings | `app/embeddings.py` | Convert text chunks and questions into dense vectors |
-| Vector Store | `app/vector_store.py` | Save and retrieve semantically similar chunks |
-| RAG Logic | `app/rag.py` | Build prompts, call LLMs, and format references |
-| API Layer | `app/main.py` | Expose `/upload` and `/ask` endpoints |
-| UI | `streamlit_app.py` | Let users upload documents and ask questions |
+| Vector Store | `app/vector_store.py` | Save and retrieve semantically similar chunks (FAISS / pgvector / hybrid), with metadata filters |
+| RAG Logic | `app/rag.py` | Rerank, gate, prompt, call LLMs, verify grounding, format references, cache |
+| Question domains | `app/rag.py` | Classify each question into a 20-entry catalog (`/question-domains`) |
+| API Layer | `app/main.py` | Expose the ingestion, ask, and observability endpoints |
+| Observability | `app/slo_metrics.py`, `app/feedback_store.py` | Latency/error/quality metrics (`/metrics`); thumbs + corrections (`/feedback`) |
+| UI | `streamlit_app.py`, `app/streamlit_demo.py` | Let users ingest content and ask questions |
 
 ---
 
@@ -81,11 +89,14 @@ Supported providers:
 | OpenAI | main answer generation path |
 | Hugging Face Inference API | alternative provider |
 
+A third value, `auto`, submits the prompt to both providers and returns the first non-empty reply.
+
 Configured through environment variables:
 
 ```env
-LLM_PROVIDER=openai
-LLM_MODEL=gpt-4o-mini
+LLM_PROVIDER=openai            # openai | huggingface | auto
+OPENAI_LLM_MODEL=gpt-4o-mini   # LLM_MODEL is still accepted as a legacy alias
+HUGGINGFACE_LLM_MODEL=google/flan-t5-base
 OPENAI_API_KEY=...
 HUGGINGFACE_API_KEY=...
 ```
@@ -105,10 +116,15 @@ The system should answer **only from the uploaded document**.
 
 ### Current Strengths
 The existing implementation already:
+- retrieves a larger candidate pool and **lexically reranks** it before keeping `TOP_K`,
+- applies a **lexical relevance gate** that skips the provider call when the question and context do not overlap,
+- applies **grounding gates** after generation (`_is_answer_grounded`, `_answer_addresses_question`) that replace an unsupported answer with a fixed "no relevant information" response,
+- supports **metadata-scoped retrieval** (tenant / collection / document / date / author / tag / source),
 - deduplicates repeated chunks,
 - clears old vector data on re-upload,
-- appends `References:` lines,
-- returns a concise fallback answer if the provider fails.
+- appends `References:` lines from section labels,
+- caches responses and retrieval results (30-minute TTL, invalidated by the vector store's `revision` counter),
+- returns a concise document-grounded fallback sentence if the provider fails.
 
 ---
 
@@ -195,14 +211,17 @@ Handle third-party LLM failures gracefully.
 ### Objective
 Measure and improve answer quality over time.
 
-### Implementation Plan
+### Status: partially implemented
+- `app/slo_metrics.py` serves a structured SLO report at `GET /metrics`: a p50/p90/p95/p99 latency distribution, availability, throughput, and retrieval-hit quality, each scored against a configurable target (`SLO_*` env vars) with an attainment ratio, an error-budget figure, and an overall `healthy` / `at_risk` / `breached` status.
+- `app/feedback_store.py` records thumbs up/down and free-text corrections, at `POST /feedback` and `GET /feedback/summary`.
+- `app/metrics_dashboard.py` is a Streamlit Precision@K / Recall@K dashboard with a CI-style quality gate — still driven by synthetic sample data, to be wired to real evaluation output.
+
+### Remaining
 Add monitoring for:
 - upload success rate,
-- retrieval latency,
-- answer generation latency,
-- provider failures,
 - percentage of fallback answers,
-- frequency of low-quality/empty answers.
+- frequency of low-quality/empty answers,
+- export to an external metrics backend (Prometheus/Grafana) rather than in-memory only.
 
 ### Suggested Metrics
 | Metric | Purpose |
@@ -257,30 +276,47 @@ Add monitoring for:
 **AI integration value:**
 - section-aware chunks directly support answer citations.
 
+### 8.5 `app/ingestion.py` and `app/db_ingestion.py`
+**Current role:**
+- `ingestion.py` extracts text from uploads (PDF/DOCX/TXT/image OCR), Google Docs, and SharePoint files (Microsoft Graph, app-only token cached per client id).
+- `db_ingestion.py` runs one read-only `SELECT` (PostgreSQL or SQLite) and serializes each row to a `[<table> N] col: val; …` line; writes are blocked by a read-only connection, a `SELECT`/`WITH`-only filter, and a row cap.
+
+**AI integration value:**
+- broadens the evidence base beyond uploaded files while keeping a single downstream chunk → embed → index path and one grounding model.
+
+### 8.6 `app/retrieval_service.py` / `app/inference_service.py`
+**Current role:**
+- expose `/search` and `/generate`; `rag.py` calls them over HTTP when the corresponding service URL is configured, importing its reranker and provider helpers so behavior stays identical to the monolith.
+
 ---
 
-## 9. Proposed Future AI Enhancements
+### Already delivered since the original plan
+- multi-document / multi-collection retrieval with metadata scoping,
+- lexical reranking of retrieved chunks before generation,
+- a user feedback loop (`/feedback`) for answer-quality signal,
+- question-domain classification on every answer,
+- additional ingestion sources (Google Docs, SharePoint, SQL rows),
+- async ingestion for large uploads.
 
 ### Short-Term Enhancements
 1. add a confidence score for each answer,
 2. return the top supporting chunks in the UI,
 3. expose retrieval scores for debugging,
 4. improve prompt engineering for more concise answers,
-5. add support for multiple uploaded documents.
+5. relax the grounding gate for paraphrased/synthesized answers that are still supported.
 
 ### Medium-Term Enhancements
-1. metadata-aware retrieval (document name, page number, section ID),
-2. hybrid lexical + vector search,
+1. carry `source_document`, page number, and section ID through to the `References:` line,
+2. true hybrid lexical + vector scoring (not just a lexical rerank of vector hits),
 3. query rewriting for ambiguous questions,
 4. answer summarization and bullet output modes,
-5. reranking of retrieved chunks before generation.
+5. per-user permission-trimmed retrieval (delegated auth for SharePoint).
 
 ### Long-Term Enhancements
-1. multi-document knowledge workspace,
+1. conversational memory across questions,
 2. local/offline LLM support,
-3. conversational memory across questions,
-4. user feedback loop for answer quality improvement,
-5. domain-tuned prompt templates or model fine-tuning.
+3. domain-tuned prompt templates or model fine-tuning,
+4. a query-time text-to-SQL path for structured data (today's database ingestion is row serialization only).
 
 ---
 
@@ -326,8 +362,13 @@ The AI integration must be validated through:
 
 ### Integration Tests
 - upload → embed → store → retrieve → answer
+- each ingestion endpoint (upload / Google Docs / SharePoint / database) reaches the shared indexing path
+- SharePoint token caching and share-URL encoding (mocked Graph)
+- SQLite row ingestion end to end, plus the read-only SQL statement guards
+- relevance-gate and grounding-gate behavior (answer downgraded to "no relevant information")
+- response/retrieval cache reuse across repeated questions
 - pgvector connectivity
-- provider fallback when OpenAI/Hugging Face fails
+- provider fallback when OpenAI/Hugging Face fails; `auto` mode selection
 
 ### System Tests
 - Streamlit upload and answer flow
@@ -346,20 +387,27 @@ The AI integration must be validated through:
 ## 13. Implementation Checklist
 
 ### Completed / Existing
-- [x] FastAPI integration
-- [x] Streamlit integration
+- [x] FastAPI integration (four ingestion endpoints + `/ask`)
+- [x] Streamlit integration (API-backed and in-process)
 - [x] sentence-transformer embeddings
-- [x] FAISS support
-- [x] PostgreSQL + pgvector support
+- [x] FAISS, pgvector, and hybrid vector backends
+- [x] Google Docs, SharePoint (Microsoft Graph), and SQL-row ingestion
+- [x] async ingestion queue for large uploads (`/ingestion-jobs/{id}`)
+- [x] metadata-scoped retrieval (tenant / collection / document / date / author / tag / source)
+- [x] lexical reranking + relevance gate + grounding gates
 - [x] section references in answers
-- [x] duplicate retrieval reduction
-- [x] fallback answer when provider fails
+- [x] response and retrieval caching
+- [x] question-domain classification (`/question-domains`)
+- [x] `auto` provider mode + document-grounded fallback when the provider fails
+- [x] SLO metrics (`/metrics`) and feedback capture (`/feedback`)
 
 ### Recommended Next Steps
 - [ ] add confidence score in responses
-- [ ] add `source_document` and page metadata to answers
-- [ ] add health endpoint for AI readiness
-- [ ] add monitoring dashboards
+- [ ] carry `source_document` and page metadata into `References:`
+- [ ] add a dedicated `/health` endpoint for AI readiness
+- [ ] wire the metrics dashboard to real evaluation output
+- [ ] export metrics to an external backend (Prometheus/Grafana)
+- [ ] per-user permission-trimmed retrieval for SharePoint
 - [ ] add local/offline LLM option
 
 ---
