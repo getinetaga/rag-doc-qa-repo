@@ -97,9 +97,21 @@ API endpoints:
 All ingestion endpoints accept the same optional scoping fields (`tenant_id`, `collection_id`,
 `document_id`, `document_date`, `author`, `tag`, `source_system`).
 
-5. (Alternative) Run the Streamlit in-process demo
+6. Run the front end (production UI)
 
-The repository contains a simple demo UI you can run locally. It runs the pipeline in-process (ingest → index → ask).
+The production UI is a React + Vite + TypeScript app in [`frontend/`](frontend/) that talks to the
+FastAPI backend.
+
+```bash
+cd frontend
+npm install
+npm run dev        # http://localhost:5173  (npm run build for a production bundle)
+```
+
+7. (Alternative) Run a Streamlit demo
+
+For quick local experiments there are Streamlit apps that run the pipeline in-process (ingest →
+index → ask).
 
 Both Streamlit entry points use explicit event handlers to keep session state predictable:
 - file-selection change handlers clear stale document/chat state,
@@ -142,13 +154,13 @@ Notes:
 	- `slo_metrics.py`, `feedback_store.py`, `ingestion_jobs.py` — metrics, feedback, async-ingest queue
 	- `config.py` — environment and configuration helpers
 	- `streamlit_demo.py` — in-process demo UI
+- `frontend/` — production UI (React + Vite + TypeScript); `npm run dev` / `npm run build`
 - `docs/` — project documentation
 	- `architecture.md` — architecture and flow details
 	- `projectOverview.md` — consolidated project overview
 	- `project-management/` — governance and implementation docs (test plan, DevOps, quality, AI integration)
 - `tests/` — pytest suite for API, ingestion, database ingestion, vector store, and RAG pipeline
 - `samples/` — sample input artifacts for experiments and local runs
-- `prototypes/` — prototype assets (e.g., UI proof-of-concepts)
 - `requirements.txt` — Python deps
 - `Jenkinsfile` — CI pipeline example
 
