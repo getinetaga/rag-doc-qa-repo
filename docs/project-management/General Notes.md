@@ -17,12 +17,12 @@ It is intended for developers, testers, reviewers, and project stakeholders.
 This application is an **AI-powered Retrieval-Augmented Generation (RAG) Document Question Answering System**.
 
 It allows a user to:
-1. upload a document (`PDF`, `DOCX`, or `TXT`),
-2. process and split the document into chunks,
+1. bring in content from a document upload (`PDF`, `DOCX`, `TXT`, or an image via OCR), a shared **Google Doc**, a **SharePoint** file, or the rows of a read-only **SQL query**,
+2. process and split that content into chunks with section labels,
 3. create embeddings from the text,
-4. store/retrieve those chunks using vector search,
+4. store/retrieve those chunks using vector search (FAISS, pgvector, or hybrid),
 5. ask questions in natural language,
-6. receive a clear answer with **section references**.
+6. receive a clear answer with **section references** and a detected **question domain**.
 
 ---
 
@@ -30,14 +30,27 @@ It allows a user to:
 
 ```text
 app/                 -> core application logic
+  main.py            -> FastAPI app and all endpoints
+  ingestion.py       -> uploads + Google Docs + SharePoint text extraction
+  db_ingestion.py    -> read-only SQL row serialization
+  chunking.py        -> overlapping, section-labeled chunks
+  embeddings.py      -> SentenceTransformers wrapper
+  vector_store.py    -> FAISS / pgvector / hybrid behind one wrapper
+  rag.py             -> retrieval, rerank, grounded generation, caching
+  retrieval_service.py, inference_service.py -> optional standalone services
+  slo_metrics.py, feedback_store.py, ingestion_jobs.py -> metrics, feedback, async queue
+  streamlit_demo.py  -> in-process demo UI
+  metrics_dashboard.py -> retrieval-metrics dashboard
 scripts/             -> helper SQL and script files
 docs/                -> project and architecture documentation
-tests/               -> automated test suite
-streamlit_app.py     -> main Streamlit user interface
+tests/               -> automated test suite (7 files, 76 tests)
+streamlit_app.py     -> API-backed Streamlit user interface
 README.md            -> quick start and project overview
-requirements.txt     -> Python dependencies
+requirements.txt     -> Python runtime dependencies
+requirements-dev.txt -> formatting / linting / type-check tools
 Dockerfile           -> container definition
-Jenkinsfile          -> CI/CD pipeline definition
+docker-compose.yml   -> 3-service split (api / retrieval / inference)
+Jenkinsfile          -> CI pipeline definition
 ```
 
 ---
@@ -77,8 +90,11 @@ streamlit run streamlit_app.py
 **Purpose:**
 - FastAPI backend entry point
 - exposes the API endpoints:
-  - `/upload`
-  - `/ask`
+  - ingestion: `/upload`, `/upload-google-doc`, `/upload-sharepoint`, `/ingest-database`
+  - querying: `/ask`, `/question-domains`
+  - async-job status: `/ingestion-jobs/{job_id}`
+  - observability: `/metrics`, `/feedback`, `/feedback/summary`
+- every ingestion endpoint funnels into one internal chunk → embed → store step and accepts the same optional scoping fields (`tenant_id`, `collection_id`, `document_id`, `document_date`, `author`, `tag`, `source_system`)
 
 **Use it when:**
 - you want to run the backend API,
@@ -93,11 +109,22 @@ uvicorn app.main:app --reload
 
 ## 4.4 `app/ingestion.py`
 **Purpose:**
-- reads and extracts text from uploaded files
-- supports `TXT`, `PDF`, and `DOCX`
+- extracts text from uploaded files — `TXT`, `PDF`, `DOCX`, and images (OCR)
+- fetches and extracts shared **Google Docs** (`extract_google_doc_text`)
+- downloads and extracts **SharePoint / OneDrive-for-Business** files through Microsoft Graph using an app-only token (`extract_sharepoint_text`)
 
 **Use it when:**
-- you need to understand how the document text enters the system.
+- you need to understand how document text enters the system from files or remote document sources.
+
+---
+
+## 4.4b `app/db_ingestion.py`
+**Purpose:**
+- runs a single read-only `SELECT` against PostgreSQL or SQLite and serializes each row into a labeled line of text for indexing (`extract_database_text`)
+- blocks writes three ways: a read-only connection, a `SELECT`/`WITH`-only statement filter, and a row cap
+
+**Use it when:**
+- you want reference tables, catalogs, or lookup data available to the Q&A system without exporting them to files.
 
 ---
 
@@ -137,24 +164,40 @@ uvicorn app.main:app --reload
 
 ## 4.8 `app/rag.py`
 **Purpose:**
-- handles the RAG logic
-- retrieves context
-- builds prompts
-- calls OpenAI or Hugging Face
-- formats the answer and references
+- handles the RAG logic: embeds the question, retrieves a candidate pool, lexically reranks it, and keeps the top `TOP_K` chunks
+- applies a lexical relevance gate before calling the provider, and grounding gates after
+- calls OpenAI, Hugging Face, or `auto` (races both)
+- formats the answer, appends `References:`, and classifies the `question_domain`
+- caches responses and retrieval results in memory (30-minute TTL)
 
 **Use it when:**
-- you want to understand how the final answer is generated.
+- you want to understand how the final answer is generated and why an answer may be replaced with "no relevant information".
+
+---
+
+## 4.8b `app/retrieval_service.py` and `app/inference_service.py`
+**Purpose:**
+- optional standalone FastAPI services. When `RETRIEVAL_SERVICE_URL` / `INFERENCE_SERVICE_URL` are set, `rag.py` calls these over HTTP instead of doing retrieval / generation in-process, so they can be scaled separately over a shared persistent index. `docker-compose.yml` wires this topology.
+
+---
+
+## 4.8c `app/slo_metrics.py`, `app/feedback_store.py`, `app/ingestion_jobs.py`
+**Purpose:**
+- `slo_metrics.py` — turns in-memory request samples into a structured SLO report at `/metrics` (latency percentiles, availability, throughput, retrieval quality, and each scored against an `SLO_*` target with an error budget and an overall status)
+- `feedback_store.py` — thumbs up/down and free-text corrections at `/feedback` and `/feedback/summary`
+- `ingestion_jobs.py` — an in-process thread queue that large uploads are handed to; status is polled at `/ingestion-jobs/{job_id}`
 
 ---
 
 ## 4.9 `app/config.py`
 **Purpose:**
-- reads environment variables from `.env`
-- stores app configuration values
+- reads environment variables from `.env` (a dependency-free loader; it never overrides an already-set variable)
+- stores app configuration values — models, providers, chunk sizes, `TOP_K`, vector backend, service URLs, upload caps, and the `SHAREPOINT_*` / `GRAPH_*` / `DB_INGESTION_*` groups
 
 **Use it when:**
-- you need to change model/provider/db settings.
+- you need to change model / provider / database / ingestion settings.
+
+> Note: a variable set to an empty string in `.env` (`FOO=`) counts as "set" and shadows the built-in default — leave a key out entirely rather than blanking it.
 
 ---
 
@@ -210,17 +253,20 @@ python -m pytest -q
 | **Python** | main development language |
 | **FastAPI** | backend API framework |
 | **Uvicorn** | FastAPI server |
-| **Streamlit** | browser-based UI |
-| **SentenceTransformers** | embedding generation |
-| **FAISS** | in-memory vector search |
-| **PostgreSQL** | persistent database |
+| **Streamlit** | browser-based UIs (API-backed, in-process, metrics dashboard) |
+| **SentenceTransformers** | embedding generation (`all-MiniLM-L6-v2`) |
+| **FAISS** | in-memory vector search (default backend) |
+| **PostgreSQL** | persistent database (`pgvector` / `hybrid` backends; also a `/ingest-database` source) |
 | **pgvector** | vector extension for PostgreSQL |
-| **psycopg** | PostgreSQL database connector |
+| **psycopg** | PostgreSQL connector (vector store and SQL ingestion) |
+| **SQLite (`sqlite3`)** | second supported `/ingest-database` source (standard library) |
+| **pdfplumber / python-docx / pytesseract** | PDF / DOCX / image-OCR text extraction |
+| **Microsoft Graph (via `requests`)** | SharePoint / OneDrive file download |
 | **OpenAI API** | answer generation provider |
-| **Hugging Face API** | alternative answer generation provider |
-| **pytest** | automated testing |
-| **Docker** | containerization |
-| **Jenkins** | CI/CD automation |
+| **Hugging Face API** | alternative answer generation provider (`auto` races both) |
+| **pytest** | automated testing (76 tests) |
+| **Docker / Docker Compose** | containerization; 3-service split |
+| **Jenkins** | CI automation |
 | **Git/GitHub** | version control |
 
 ---
@@ -242,7 +288,11 @@ python -m pytest -q
 | **PDF** | Portable Document Format | supported upload file type |
 | **DOCX** | Microsoft Word document format | supported upload file type |
 | **TXT** | Plain text file | supported upload file type |
-| **DSN** | Data Source Name | PostgreSQL connection string |
+| **OCR** | Optical Character Recognition | extracts text from image uploads via Tesseract |
+| **DSN** | Data Source Name | database connection string (`postgresql://…` or `sqlite:///…`) |
+| **Graph** | Microsoft Graph API | used to fetch SharePoint / OneDrive files |
+| **SLO** | Service Level Objective | availability / latency / retrieval-quality targets scored at `/metrics`, with an error budget and a `healthy`/`at_risk`/`breached` status |
+| **TTL** | Time To Live | expiry window for the in-memory response/retrieval caches (30 min) |
 | **QA** | Quality Assurance | software testing and validation process |
 | **OV** | Overlap Value | chunk overlap used in text splitting conceptually |
 

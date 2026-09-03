@@ -14,26 +14,28 @@ These responsibilities apply to all contributors involved in designing, developi
 ## Detailed Roles and Responsibilities
 
 ## Application Developers
-- Build and maintain the FastAPI workflows in app/main.py, especially POST /upload and POST /ask, so document processing and Q&A remain reliable.
-- Maintain the end-to-end pipeline contracts across ingestion.py, chunking.py, embeddings.py, vector_store.py, and rag.py.
-- Ensure upload handling for PDF, DOCX, and TXT is validated and temporary file cleanup is always executed.
-- Keep API request and response schemas stable for QuestionRequest and AnswerResponse to avoid client breakage.
-- Preserve behavior when no document is loaded (safe response from /ask) and avoid crashes on malformed input.
-- Add or update tests in tests/test_api.py and tests/test_rag_pipeline.py when changing pipeline logic.
+- Build and maintain the FastAPI workflows in app/main.py — the ingestion endpoints (POST /upload, /upload-google-doc, /upload-sharepoint, /ingest-database) and POST /ask — so content processing and Q&A remain reliable.
+- Maintain the end-to-end pipeline contracts across ingestion.py, db_ingestion.py, chunking.py, embeddings.py, vector_store.py, and rag.py, keeping every ingestion source on the one shared chunk → embed → index path.
+- Ensure text extraction is validated for each source (PDF, DOCX, TXT, image OCR, Google Docs, SharePoint, SQL rows) and that temporary files and database connections are always cleaned up.
+- Keep API request/response schemas stable (QuestionRequest, AnswerResponse, and the *IngestRequest models) to avoid client breakage; validation failures should be 422, not 500.
+- Preserve behavior when nothing is indexed (safe response from /ask) and avoid crashes on malformed input.
+- Add or update tests in tests/test_api.py, tests/test_ingestion.py, tests/test_db_ingestion.py, and tests/test_rag_pipeline.py when changing pipeline logic.
 
 ## DevOps and Platform Engineers
 - Operate reproducible Python environments for local, CI, and containerized runs using requirements.txt, requirements-dev.txt, and the Dockerfile.
 - Maintain the Jenkins pipeline stages for install, test, and optional Docker build so every merge has traceable quality checks.
-- Manage environment configuration for LLM_PROVIDER, LLM_MODEL, VECTOR_DB_BACKEND, OPENAI_API_KEY, HUGGINGFACE_API_KEY, and PGVECTOR_DSN without exposing secrets.
-- Ensure pgvector setup and connectivity are stable when VECTOR_DB_BACKEND is pgvector or hybrid, including schema/table readiness.
-- Monitor API availability and performance for /upload and /ask, including failure trends and restart/rollback readiness.
+- Manage environment configuration for LLM_PROVIDER, OPENAI_LLM_MODEL / HUGGINGFACE_LLM_MODEL, VECTOR_DB_BACKEND, OPENAI_API_KEY, HUGGINGFACE_API_KEY, PGVECTOR_DSN, the SHAREPOINT_* / GRAPH_* group, the DB_INGESTION_* group, and RETRIEVAL_SERVICE_URL / INFERENCE_SERVICE_URL — without exposing secrets.
+- Ensure pgvector setup and connectivity are stable when VECTOR_DB_BACKEND is pgvector or hybrid, including schema/table readiness; keep API_WORKERS=1 when the backend is faiss.
+- Monitor API availability and performance across all ingestion endpoints and /ask (the app exposes /metrics and /feedback/summary), including failure trends and restart/rollback readiness.
+- Keep the SharePoint app registration and its client secret current, and the database-ingestion DSNs read-only.
 - Keep dependency versions secure and compatible (for example openai and httpx compatibility noted in project documentation).
 
 ## QA and Test Engineers
-- Validate core user journeys: upload a supported document, build index, ask question, and receive grounded answer.
-- Maintain and expand pytest coverage in tests/test_ingestion.py, tests/test_api.py, tests/test_rag_pipeline.py, and tests/test_vector_store.py.
-- Use monkeypatch and stubs to isolate embedding/model dependencies while preserving meaningful behavior checks.
-- Verify error handling for unsupported files, empty content, missing document state, and backend connectivity failures.
+- Validate core user journeys for each source: ingest (upload / Google Doc / SharePoint file / SQL query), build index, ask question, and receive a grounded answer with references and a question domain.
+- Maintain and expand pytest coverage in tests/test_ingestion.py, tests/test_db_ingestion.py, tests/test_api.py, tests/test_rag_pipeline.py, and tests/test_vector_store.py.
+- Use monkeypatch and stubs to isolate embedding/model/network dependencies while preserving meaningful behavior checks.
+- Verify error handling for unsupported files, empty content, missing index state, non-SELECT database queries, missing SharePoint locators, and backend connectivity failures — and confirm validation errors surface as HTTP 422.
+- Cover the relevance/grounding gates and the response/retrieval caches, which can silently change what a user sees.
 - Test both API usage and Streamlit interaction patterns to ensure consistent output expectations across interfaces.
 - Enforce regression testing whenever chunking, retrieval ranking, embedding model, or vector backend behavior changes.
 
@@ -110,11 +112,13 @@ We aim to reduce avoidable bias and support accessible usage patterns so the sys
 ## Responsibilities by Practice Area
 
 ## Data Responsibility
-- Use only authorized and appropriately licensed documents for ingestion.
+- Use only authorized and appropriately licensed content for ingestion — including SharePoint sites and database tables the service account is permitted to read.
+- Note that SharePoint ingestion uses an app-only Graph token: retrieval is **not** permission-trimmed per end user, so scope the app registration narrowly and treat every indexed collection as readable by anyone who can call `/ask` against it.
+- Restrict database ingestion to read-only DSNs and non-sensitive tables; the `SELECT`-only filter is a guard, not a licence to point it at production credentials stores.
 - Classify data sensitivity before ingestion and apply matching controls.
 - Avoid storing secrets, credentials, or regulated personal data in vector stores unless explicitly approved and protected.
-- Apply data minimization: ingest only content needed for the use case.
-- Define and enforce retention and deletion rules for source files, embeddings, logs, and caches.
+- Apply data minimization: ingest only content (and only the rows/columns) needed for the use case.
+- Define and enforce retention and deletion rules for source files, embeddings, logs, and the in-memory caches / feedback / job state.
 
 ## Model and Retrieval Responsibility
 - Treat model outputs as probabilistic and potentially fallible.
@@ -187,4 +191,4 @@ We aim to reduce avoidable bias and support accessible usage patterns so the sys
 This document should be reviewed at least once per release cycle, or sooner when there are major changes to data sources, model providers, infrastructure, or regulatory obligations.
 
 Document owner: Project Maintainers
-Last updated: 2026-04-12
+Last updated: 2026-09-03

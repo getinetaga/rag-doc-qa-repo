@@ -21,11 +21,13 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 
 from . import config
 from .chunking import chunk_text
+from .db_ingestion import extract_database_text
 from .embeddings import embed_text, get_model
-from .ingestion import extract_google_doc_text, extract_text
+from .ingestion import extract_google_doc_text, extract_sharepoint_text, extract_text
 from .ingestion_jobs import enqueue_job, ensure_worker_started, get_job
 from .rag import generate_answer
 from .rag import classify_question_domain, get_question_domain_catalog
@@ -33,12 +35,14 @@ from . import slo_metrics
 from . import feedback_store
 from .schemas import (
     AnswerResponse,
+    DatabaseIngestRequest,
     FeedbackRequest,
     FeedbackResponse,
     GoogleDocIngestRequest,
     IngestResponse,
     QuestionDomainCatalogResponse,
     QuestionRequest,
+    SharePointIngestRequest,
 )
 from .vector_store import VectorStore
 
@@ -88,6 +92,23 @@ async def lifespan(app: FastAPI):
 
 # Initialize FastAPI application
 app = FastAPI(title="RAG Document QA", lifespan=lifespan)
+
+# Enable CORS for TypeScript frontend and local development
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",
+        "http://localhost:5174",
+        "http://localhost:3000",
+        "http://localhost:8501",
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:5174",
+        "http://127.0.0.1:3000",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # A module-level reference to the currently active VectorStore instance. It is
 # created when a document is uploaded and kept in module scope for subsequent
@@ -248,6 +269,16 @@ async def upload_document(
     logger.info("Upload request received: %s", file.filename)
     request_started_at = time.monotonic()
 
+    declared_size = int(getattr(file, "size", 0) or 0)
+    if declared_size and declared_size > config.MAX_UPLOAD_FILE_SIZE_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                f"File too large. Maximum allowed size is "
+                f"{config.MAX_UPLOAD_FILE_SIZE_BYTES} bytes."
+            ),
+        )
+
     # Save uploaded file to a temporary local path.
     file_path = f"temp_{file.filename}"
     with open(file_path, "wb") as f:
@@ -260,6 +291,15 @@ async def upload_document(
             file_size = int(getattr(file, "size", 0) or os.path.getsize(file_path))
         except OSError:
             file_size = 0
+
+        if file_size > config.MAX_UPLOAD_FILE_SIZE_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=(
+                    f"File too large. Maximum allowed size is "
+                    f"{config.MAX_UPLOAD_FILE_SIZE_BYTES} bytes."
+                ),
+            )
 
         should_queue = config.ASYNC_INGESTION_MIN_BYTES == 0 or file_size >= config.ASYNC_INGESTION_MIN_BYTES
 
@@ -328,6 +368,81 @@ async def upload_google_doc(req: GoogleDocIngestRequest):
             collection_id=req.collection_id,
             document_id=req.document_id,
             original_name=req.google_doc_url,
+            document_date=req.document_date,
+            author=req.author,
+            tag=req.tag,
+            source_system=req.source_system,
+        )
+        slo_metrics.record_request(time.monotonic() - request_started_at, success=True)
+        return result
+    except Exception:
+        slo_metrics.record_request(time.monotonic() - request_started_at, success=False)
+        raise
+
+
+@app.post("/upload-sharepoint", response_model=IngestResponse)
+async def upload_sharepoint(req: SharePointIngestRequest):
+    """Ingest a SharePoint / OneDrive-for-Business document via Microsoft Graph.
+
+    Accepts either a shareable ``sharepoint_url`` or an ``item_id`` plus
+    ``drive_id`` / ``site_id``. The file is downloaded with an app-only Graph
+    token, text-extracted, chunked, embedded, and indexed exactly like a direct
+    upload. Retrieval is not permission-trimmed per end user — see
+    ``app/config.py`` for the auth caveat.
+    """
+
+    request_started_at = time.monotonic()
+    try:
+        text = extract_sharepoint_text(
+            req.sharepoint_url,
+            site_id=req.site_id,
+            drive_id=req.drive_id,
+            item_id=req.item_id,
+        )
+        original_name = req.sharepoint_url or req.item_id or "sharepoint_document"
+        result = _index_text_content(
+            text=text,
+            tenant_id=req.tenant_id,
+            collection_id=req.collection_id,
+            document_id=req.document_id,
+            original_name=original_name,
+            document_date=req.document_date,
+            author=req.author,
+            tag=req.tag,
+            source_system=req.source_system,
+        )
+        slo_metrics.record_request(time.monotonic() - request_started_at, success=True)
+        return result
+    except Exception:
+        slo_metrics.record_request(time.monotonic() - request_started_at, success=False)
+        raise
+
+
+@app.post("/ingest-database", response_model=IngestResponse)
+async def ingest_database(req: DatabaseIngestRequest):
+    """Ingest rows from a SQL database via a single read-only ``SELECT``.
+
+    Runs ``SELECT * FROM <table>`` or a caller-supplied read-only query against
+    PostgreSQL or SQLite, serializes each row to a line of text, and indexes it
+    through the same chunk/embed/store path as a document upload. Statement
+    safety and row caps live in ``app/db_ingestion.py``.
+    """
+
+    request_started_at = time.monotonic()
+    try:
+        text = extract_database_text(
+            connection_string=req.connection_string,
+            query=req.query,
+            table=req.table,
+            max_rows=req.max_rows,
+        )
+        original_name = req.table or "database_query"
+        result = _index_text_content(
+            text=text,
+            tenant_id=req.tenant_id,
+            collection_id=req.collection_id,
+            document_id=req.document_id,
+            original_name=original_name,
             document_date=req.document_date,
             author=req.author,
             tag=req.tag,

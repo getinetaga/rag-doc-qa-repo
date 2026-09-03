@@ -112,6 +112,9 @@ INFERENCE_SERVICE_URL = os.getenv("INFERENCE_SERVICE_URL", "").rstrip("/")
 # exceed this size (in bytes). Set to 0 to process all uploads asynchronously.
 ASYNC_INGESTION_MIN_BYTES = int(os.getenv("ASYNC_INGESTION_MIN_BYTES", "200000"))
 
+# Hard upload size cap in bytes (default: 200 MiB).
+MAX_UPLOAD_FILE_SIZE_BYTES = int(os.getenv("MAX_UPLOAD_FILE_SIZE_BYTES", "209715200"))
+
 # Vector database backend selection.
 # Supported values: 'faiss', 'pgvector', or 'hybrid'.
 # Default behavior: prefer persistent pgvector when a DSN is configured,
@@ -125,3 +128,39 @@ VECTOR_DB_BACKEND = os.getenv("VECTOR_DB_BACKEND", _default_vector_backend).lowe
 PGVECTOR_DSN = os.getenv("PGVECTOR_DSN")
 PGVECTOR_TABLE_NAME = os.getenv("PGVECTOR_TABLE_NAME", "rag_embeddings")
 PGVECTOR_PRIMARY_SEARCH = os.getenv("PGVECTOR_PRIMARY_SEARCH", "pgvector").lower()
+
+# Microsoft Graph / SharePoint ingestion.
+# Uses the app-only (client-credentials) OAuth2 flow: register an Entra ID
+# application, grant it the application permissions Sites.Read.All and
+# Files.Read.All, and record admin consent. Because the token is app-only,
+# retrieval is NOT permission-trimmed per end user — the app can read every
+# site it has been granted. Add delegated auth if per-user access control is
+# required.
+SHAREPOINT_TENANT_ID = os.getenv("SHAREPOINT_TENANT_ID") or os.getenv("AZURE_TENANT_ID")
+SHAREPOINT_CLIENT_ID = os.getenv("SHAREPOINT_CLIENT_ID") or os.getenv("AZURE_CLIENT_ID")
+SHAREPOINT_CLIENT_SECRET = (
+    os.getenv("SHAREPOINT_CLIENT_SECRET") or os.getenv("AZURE_CLIENT_SECRET")
+)
+
+# Graph endpoints are overridable for sovereign/national clouds.
+GRAPH_BASE_URL = os.getenv("GRAPH_BASE_URL", "https://graph.microsoft.com/v1.0").rstrip("/")
+GRAPH_AUTHORITY = os.getenv("GRAPH_AUTHORITY", "https://login.microsoftonline.com").rstrip("/")
+
+# Hard cap on a single SharePoint download (default: 200 MiB), mirroring
+# MAX_UPLOAD_FILE_SIZE_BYTES for direct uploads.
+SHAREPOINT_MAX_DOWNLOAD_BYTES = int(
+    os.getenv("SHAREPOINT_MAX_DOWNLOAD_BYTES", str(209715200))
+)
+
+# Database (SQL) row-serialization ingestion (/ingest-database).
+# Runs a single read-only SELECT against the target database and turns each
+# returned row into a line of text that is then chunked, embedded, and indexed
+# like any other document. Only the 'postgresql' / 'postgres' and 'sqlite'
+# connection schemes are accepted. A request may carry its own
+# connection_string; when it does not, DB_INGESTION_DSN is used.
+DB_INGESTION_DSN = os.getenv("DB_INGESTION_DSN")
+DB_INGESTION_MAX_ROWS = int(os.getenv("DB_INGESTION_MAX_ROWS", "5000"))
+DB_INGESTION_MAX_CELL_CHARS = int(os.getenv("DB_INGESTION_MAX_CELL_CHARS", "2000"))
+DB_INGESTION_STATEMENT_TIMEOUT_MS = int(
+    os.getenv("DB_INGESTION_STATEMENT_TIMEOUT_MS", "15000")
+)

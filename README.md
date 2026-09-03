@@ -2,9 +2,18 @@
 
 This repository demonstrates a small, modular Retrieval-Augmented
 Generation (RAG) pipeline for asking natural-language questions about
-uploaded documents (PDF, DOCX, TXT, image OCR) and Google Docs content. It includes:
+content from many sources:
 
-- A FastAPI backend exposing `/upload` and `/ask` endpoints.
+- **Direct uploads** — PDF, DOCX, TXT, and image OCR.
+- **Google Docs** — fetched by shared URL.
+- **SharePoint / OneDrive-for-Business** — fetched through Microsoft Graph.
+- **SQL databases** — rows from a read-only `SELECT` (PostgreSQL or SQLite),
+  serialized to text.
+
+It includes:
+
+- A FastAPI backend exposing `/upload`, `/upload-google-doc`, `/upload-sharepoint`,
+  `/ingest-database`, `/ask`, and observability endpoints (`/metrics`, `/feedback`).
 - An in-process Streamlit demo for local experimentation.
 - Local embeddings via SentenceTransformers and a FAISS vector index.
 - Optional `pgvector` / PostgreSQL backend for persistent storage or hybrid mirroring.
@@ -48,6 +57,15 @@ LLM_MODEL=gpt-4o-mini     # change to the model you want to use
 VECTOR_DB_BACKEND=faiss   # faiss, pgvector, or hybrid
 PGVECTOR_DSN=postgresql://postgres:postgres@localhost:5432/ragdb
 PGVECTOR_TABLE_NAME=rag_embeddings
+
+# SharePoint ingestion (/upload-sharepoint) — Entra ID app, app-only token:
+SHAREPOINT_TENANT_ID=...
+SHAREPOINT_CLIENT_ID=...
+SHAREPOINT_CLIENT_SECRET=...
+
+# Database ingestion (/ingest-database) — optional default DSN, else pass per request:
+DB_INGESTION_DSN=postgresql://readonly:...@localhost:5432/appdb
+DB_INGESTION_MAX_ROWS=5000
 ```
 
 The project includes a lightweight `.env` loader in [app/config.py](app/config.py) that will populate environment variables if they are not already set. Do NOT commit real secrets.
@@ -68,7 +86,16 @@ API endpoints:
 
 - POST `/upload` — multipart file upload (pdf/docx/txt/images). Builds an in-memory index.
 - POST `/upload-google-doc` — JSON body with a Google Docs URL to fetch and index text.
+- POST `/upload-sharepoint` — JSON body with a SharePoint file URL (or `drive_id`/`site_id` +
+  `item_id`); downloads it via Microsoft Graph and indexes it. Requires the `SHAREPOINT_*` env vars.
+- POST `/ingest-database` — JSON body with a `connection_string` and exactly one of `table` or a
+  read-only `query`; serializes the returned rows and indexes them. PostgreSQL and SQLite only.
 - POST `/ask` — JSON body `{ "question": "..." }`, returns `{ "answer": "..." }`.
+- GET `/metrics`, POST `/feedback`, GET `/feedback/summary`, GET `/question-domains`,
+  GET `/ingestion-jobs/{job_id}` — observability and async-ingestion status.
+
+All ingestion endpoints accept the same optional scoping fields (`tenant_id`, `collection_id`,
+`document_id`, `document_date`, `author`, `tag`, `source_system`).
 
 5. (Alternative) Run the Streamlit in-process demo
 
@@ -104,18 +131,22 @@ Notes:
 
 - `app/` — application modules
 	- `main.py` — FastAPI app and endpoints
-	- `ingestion.py` — document text extraction helpers (pdf/docx/txt/image OCR/google docs)
+	- `ingestion.py` — text extraction for uploads (pdf/docx/txt/image OCR), Google Docs, and
+	  SharePoint files (Microsoft Graph, app-only token)
+	- `db_ingestion.py` — SQL row-serialization ingestion (read-only `SELECT` → text; PostgreSQL / SQLite)
 	- `chunking.py` — chunk-splitting utilities
 	- `embeddings.py` — SentenceTransformers wrapper (lazy, thread-safe)
-	- `vector_store.py` — minimal FAISS-backed in-memory store
-	- `rag.py` — retrieval + LLM orchestration (OpenAI Responses / HF)
+	- `vector_store.py` — FAISS / pgvector / hybrid vector store behind one wrapper
+	- `rag.py` — retrieval + rerank + grounded LLM orchestration (OpenAI Responses / HF)
+	- `retrieval_service.py`, `inference_service.py` — optional standalone services for the split topology
+	- `slo_metrics.py`, `feedback_store.py`, `ingestion_jobs.py` — metrics, feedback, async-ingest queue
 	- `config.py` — environment and configuration helpers
 	- `streamlit_demo.py` — in-process demo UI
 - `docs/` — project documentation
 	- `architecture.md` — architecture and flow details
 	- `projectOverview.md` — consolidated project overview
 	- `project-management/` — governance and implementation docs (test plan, DevOps, quality, AI integration)
-- `tests/` — pytest suite for API, ingestion, and RAG pipeline
+- `tests/` — pytest suite for API, ingestion, database ingestion, vector store, and RAG pipeline
 - `samples/` — sample input artifacts for experiments and local runs
 - `prototypes/` — prototype assets (e.g., UI proof-of-concepts)
 - `requirements.txt` — Python deps

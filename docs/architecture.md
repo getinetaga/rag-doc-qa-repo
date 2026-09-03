@@ -9,27 +9,40 @@ The application implements a small Retrieval-Augmented Generation (RAG)
 pipeline that allows users to upload documents and ask natural-language
 questions about their content. The primary responsibilities are:
 
-- Ingest documents and extract text (PDF, DOCX, TXT).
+- Ingest content and extract text from uploads (PDF, DOCX, TXT, image OCR),
+  Google Docs, SharePoint / OneDrive-for-Business files (Microsoft Graph), and
+  the rows of a read-only SQL `SELECT` (PostgreSQL or SQLite).
 - Chunk documents into retrievable pieces.
 - Produce embeddings for chunks and store them in a vector index.
 - Retrieve relevant chunks given a user question and generate an answer
   using an LLM provider (OpenAI or Hugging Face).
 
 Key runtime options:
-- In-process demo (Streamlit) for local experiments. 
-- FastAPI server for programmatic access (endpoints: `/upload`, `/ask`).
+- In-process demo (Streamlit) for local experiments.
+- FastAPI server for programmatic access (ingestion: `/upload`,
+  `/upload-google-doc`, `/upload-sharepoint`, `/ingest-database`; querying:
+  `/ask`; plus `/metrics`, `/feedback`, `/question-domains`).
 - Pluggable LLM provider via environment configuration (`LLM_PROVIDER`).
+- Pluggable vector backend via `VECTOR_DB_BACKEND` (`faiss`, `pgvector`, `hybrid`).
 
 ## Components
 
-- `app/main.py` — FastAPI app exposing endpoints to upload documents and
-  ask questions. Maintains a module-scoped `VectorStore` for the demo.
-- `app/ingestion.py` — Extracts text from PDF/DOCX/TXT files.
+- `app/main.py` — FastAPI app exposing the ingestion and question endpoints.
+  Maintains a module-scoped `VectorStore` guarded by a lock. Every ingestion
+  endpoint funnels into one internal `_index_text_content` (chunk → embed →
+  store) and carries the same tenant/collection/document scoping fields.
+- `app/ingestion.py` — Extracts text from uploaded files (PDF/DOCX/TXT/image
+  OCR) and remote sources: Google Docs (export URL) and SharePoint /
+  OneDrive-for-Business (Microsoft Graph, app-only token cached per client id).
+- `app/db_ingestion.py` — Runs one read-only `SELECT` against PostgreSQL
+  (lazy `psycopg`) or SQLite (stdlib) and serializes each row to a labeled
+  line of text. Writes are blocked by a read-only connection, a
+  `SELECT`/`WITH`-only statement filter, and a `LIMIT` + `fetchmany` row cap.
 - `app/chunking.py` — Splits large text into overlapping chunks.
 - `app/embeddings.py` — Lazily loads a SentenceTransformers model and
   computes dense embeddings for chunks.
-- `app/vector_store.py` — Minimal FAISS-backed in-memory store that holds
-  vectors and their corresponding text chunks.
+- `app/vector_store.py` — Runtime-dispatch wrapper over FAISS (in-memory
+  default), pgvector (persistent), and a hybrid mirror-write backend.
 - `app/rag.py` — Orchestrates retrieval and calls an LLM provider to
   produce an answer. Supports OpenAI Responses API and Hugging Face
   Inference API.
@@ -41,8 +54,13 @@ Key runtime options:
 
 ## Data Flow
 
-1. User uploads a document via `/upload` (FastAPI) or the Streamlit UI.
-2. `ingestion.extract_text` extracts raw text from the file.
+1. User supplies content via one of the ingestion endpoints (`/upload`,
+   `/upload-google-doc`, `/upload-sharepoint`, `/ingest-database`) or the
+   Streamlit UI.
+2. The matching extractor produces raw text: `ingestion.extract_text` for a
+   local file, `ingestion.extract_google_doc_text` /
+   `ingestion.extract_sharepoint_text` for remote files, or
+   `db_ingestion.extract_database_text` for SQL rows.
 3. `chunking.chunk_text` splits the text into chunks with overlap.
 4. `embeddings.embed_text` encodes chunks into dense vectors.
 5. `vector_store.add` inserts vectors + chunks into a FAISS index.
@@ -154,9 +172,9 @@ Generated assets will be placed in `docs/assets/diagrams`.
 
 ## Files to Review
 
-- `app/main.py`, `app/rag.py`, `app/ingestion.py`, `app/embeddings.py`,
-  `app/vector_store.py`, `app/streamlit_demo.py`, `streamlit_app.py`,
-  `Jenkinsfile`, `Dockerfile`.
+- `app/main.py`, `app/rag.py`, `app/ingestion.py`, `app/db_ingestion.py`,
+  `app/embeddings.py`, `app/vector_store.py`, `app/streamlit_demo.py`,
+  `streamlit_app.py`, `Jenkinsfile`, `Dockerfile`.
 
 ---
 

@@ -183,10 +183,22 @@ def test_metrics_endpoint_reports_slo_snapshot():
     resp = client.get("/metrics")
     assert resp.status_code == 200
     payload = resp.json()
-    assert "p95_latency_seconds" in payload
-    assert "error_rate" in payload
-    assert "throughput_rps" in payload
-    assert "avg_retrieval_hit_quality" in payload
+
+    assert payload["service"]
+    assert payload["latency_seconds"].keys() >= {"p50", "p95", "p99", "max"}
+    assert payload["availability"].keys() >= {"success_rate", "error_rate"}
+    assert "requests_per_second_since_start" in payload["traffic"]
+    assert "avg_hit_quality" in payload["retrieval_quality"]
+
+    slo = payload["slo"]
+    assert slo["status"] in {"healthy", "at_risk", "breached"}
+    assert 0.0 <= slo["error_budget_remaining"] <= 1.0
+    assert {o["name"] for o in slo["objectives"]} == {
+        "availability",
+        "latency_p95_seconds",
+        "latency_p99_seconds",
+        "retrieval_hit_quality",
+    }
 
 
 def test_feedback_capture_and_summary():
@@ -322,6 +334,115 @@ def test_upload_google_doc(monkeypatch):
     payload = resp.json()
     assert payload["message"] == "Document processed successfully"
     assert payload["chunks"] == 2
+
+
+def test_upload_sharepoint(monkeypatch):
+    def fake_extract_sharepoint_text(
+        sharepoint_url=None, *, site_id=None, drive_id=None, item_id=None
+    ):
+        assert sharepoint_url == "https://contoso.sharepoint.com/sites/hr/policy.docx"
+        return "SharePoint document content"
+
+    def fake_chunk_text(text):
+        assert text == "SharePoint document content"
+        return ["chunk-a", "chunk-b", "chunk-c"]
+
+    def fake_embed_text(chunks):
+        return [[0.1, 0.2, 0.3, 0.4] for _ in chunks]
+
+    class FakeVectorStore:
+        def __init__(self, dim):
+            self.texts = []
+
+        def clear(self, source_document=None, filters=None):
+            self.texts = []
+
+        def add(self, embeddings, texts, source_document=None, metadata_list=None):
+            self.texts.extend(texts)
+
+    monkeypatch.setattr(main, "extract_sharepoint_text", fake_extract_sharepoint_text)
+    monkeypatch.setattr(main, "chunk_text", fake_chunk_text)
+    monkeypatch.setattr(main, "embed_text", fake_embed_text)
+    monkeypatch.setattr(main, "VectorStore", FakeVectorStore)
+
+    resp = client.post(
+        "/upload-sharepoint",
+        json={
+            "sharepoint_url": "https://contoso.sharepoint.com/sites/hr/policy.docx",
+            "tenant_id": "tenant-1",
+            "collection_id": "hr-policies",
+            "document_id": "policy-01",
+            "author": "HR Team",
+        },
+    )
+
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["message"] == "Document processed successfully"
+    assert payload["chunks"] == 3
+
+
+def test_upload_sharepoint_requires_locator(monkeypatch):
+    resp = client.post("/upload-sharepoint", json={"collection_id": "hr-policies"})
+    assert resp.status_code == 422
+
+
+def test_ingest_database(monkeypatch):
+    def fake_extract_database_text(
+        *, connection_string=None, query=None, table=None, max_rows=None
+    ):
+        assert connection_string == "sqlite:///data.db"
+        assert table == "policies"
+        return "[policies 1] id: 1; title: Leave Policy"
+
+    def fake_chunk_text(text):
+        return [text]
+
+    def fake_embed_text(chunks):
+        return [[0.0, 0.1, 0.2, 0.3] for _ in chunks]
+
+    class FakeVectorStore:
+        def __init__(self, dim):
+            self.texts = []
+
+        def clear(self, source_document=None, filters=None):
+            self.texts = []
+
+        def add(self, embeddings, texts, source_document=None, metadata_list=None):
+            self.texts.extend(texts)
+
+    monkeypatch.setattr(main, "extract_database_text", fake_extract_database_text)
+    monkeypatch.setattr(main, "chunk_text", fake_chunk_text)
+    monkeypatch.setattr(main, "embed_text", fake_embed_text)
+    monkeypatch.setattr(main, "VectorStore", FakeVectorStore)
+
+    resp = client.post(
+        "/ingest-database",
+        json={
+            "connection_string": "sqlite:///data.db",
+            "table": "policies",
+            "collection_id": "reference-data",
+        },
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["message"] == "Document processed successfully"
+
+
+def test_ingest_database_requires_query_xor_table():
+    neither = client.post(
+        "/ingest-database", json={"connection_string": "sqlite:///x.db"}
+    )
+    both = client.post(
+        "/ingest-database",
+        json={
+            "connection_string": "sqlite:///x.db",
+            "query": "SELECT 1",
+            "table": "t",
+        },
+    )
+    assert neither.status_code == 422
+    assert both.status_code == 422
 
 
 def test_upload_default_document_id_keeps_multiple_files(monkeypatch):

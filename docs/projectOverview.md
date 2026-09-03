@@ -12,7 +12,7 @@
 9. [How to Run](#how-to-run)
 
 ## Project Overview
-This project delivers an AI-powered document question answering platform using Retrieval-Augmented Generation (RAG). Users upload documents (PDF, DOCX, TXT, image files) or ingest shared Google Docs content, then ask natural-language questions. The platform retrieves semantically relevant context from indexed content and generates grounded answers.
+This project delivers an AI-powered document question answering platform using Retrieval-Augmented Generation (RAG). Users bring content from several sources — direct uploads (PDF, DOCX, TXT, image files), shared Google Docs, SharePoint / OneDrive-for-Business files (via Microsoft Graph), and rows returned by a read-only SQL query (PostgreSQL or SQLite) — then ask natural-language questions. The platform retrieves semantically relevant context from indexed content and generates grounded answers.
 
 The implementation supports local and API-driven workflows:
 - FastAPI backend for upload and question answering endpoints.
@@ -29,7 +29,7 @@ The project follows a modular, API-first, and testable engineering approach:
 - Use retrieval before generation so responses are based on document context instead of model-only memory.
 
 3. Backend-first reliability:
-- Implement core capabilities in FastAPI endpoints (`/upload`, `/upload-google-doc`, `/ask`) and reuse them from frontend handlers.
+- Implement core capabilities in FastAPI endpoints (`/upload`, `/upload-google-doc`, `/upload-sharepoint`, `/ingest-database`, `/ask`) and reuse them from frontend handlers. All ingestion endpoints funnel into one chunk → embed → index path and share the same tenant/collection/document scoping fields.
 
 4. Incremental quality gates:
 - Validate behavior with unit and API tests during development and CI execution.
@@ -43,6 +43,8 @@ The architecture uses a staged RAG pipeline with clear module boundaries:
 1. Ingestion layer:
 - Extract text from PDF, DOCX, TXT, and image documents (OCR).
 - Fetch and extract plain text from shared Google Docs URLs.
+- Download and extract SharePoint / OneDrive-for-Business files through Microsoft Graph using an app-only (client-credentials) token (`app/ingestion.py`).
+- Serialize the rows of a single read-only `SELECT` (PostgreSQL or SQLite) into text, with writes blocked by a read-only connection, a `SELECT`/`WITH`-only statement filter, and a row cap (`app/db_ingestion.py`). This is row serialization only — there is no query-time text-to-SQL path.
 
 2. Chunking layer:
 - Split extracted text into overlapping chunks for better retrieval relevance.
@@ -78,7 +80,8 @@ RAG and AI:
 
 Multimodal and external ingestion:
 - Pillow + pytesseract (image OCR)
-- requests (Google Docs text export fetch)
+- requests (Google Docs text export fetch; Microsoft Graph token + SharePoint file download)
+- psycopg / stdlib sqlite3 (read-only SQL row ingestion — no new dependency)
 
 Frontend and interaction:
 - Streamlit
@@ -123,7 +126,7 @@ Testing is designed to validate behavior at module and API levels while minimizi
 - Validate ingestion, chunking, configuration logic, and vector-store behavior.
 
 2. API testing:
-- Validate FastAPI endpoint contracts for `/upload`, `/upload-google-doc`, and `/ask`.
+- Validate FastAPI endpoint contracts for `/upload`, `/upload-google-doc`, `/upload-sharepoint`, `/ingest-database`, and `/ask`.
 
 3. Pipeline testing:
 - Validate retrieval-to-generation orchestration and error handling.
@@ -138,7 +141,8 @@ Testing is designed to validate behavior at module and API levels while minimizi
 The current repository includes tests under `tests/` covering key scenarios.
 
 Document ingestion and parsing:
-- [tests/test_ingestion.py](tests/test_ingestion.py): validates supported file handling, Google Docs URL extraction behavior, and extracted text output.
+- [tests/test_ingestion.py](tests/test_ingestion.py): validates supported file handling, Google Docs URL extraction, and SharePoint/Graph fetch behavior (token caching, share-URL encoding, unsupported types).
+- [tests/test_db_ingestion.py](tests/test_db_ingestion.py): validates SQLite row serialization end to end plus the read-only statement guards (SELECT-only, single-statement, row cap, scheme allowlist).
 
 Chunking behavior:
 - [tests/test_chunking.py](tests/test_chunking.py): validates chunk generation and overlap logic.
@@ -150,7 +154,7 @@ Vector retrieval behavior:
 - [tests/test_vector_store.py](tests/test_vector_store.py): validates vector insertion and similarity search responses.
 
 API contract behavior:
-- [tests/test_api.py](tests/test_api.py): validates upload/ask endpoints, Google Docs ingestion endpoint behavior, request/response shape, and service interactions.
+- [tests/test_api.py](tests/test_api.py): validates the upload / Google Docs / SharePoint / database-ingestion / ask endpoints, request/response shape, validation errors (422), and service interactions.
 
 RAG orchestration:
 - [tests/test_rag_pipeline.py](tests/test_rag_pipeline.py): validates retrieval plus answer-generation flow and boundary conditions.
@@ -158,7 +162,7 @@ RAG orchestration:
 ## Test Reports and Outcomes
 Latest local verification (from repository context):
 - Command: `python -m pytest -q`
-- Result: 46 tests passed with exit code `0`.
+- Result: 76 tests passed with exit code `0`.
 
 Quality interpretation:
 - Core modules and endpoint behavior are validated by automated checks.

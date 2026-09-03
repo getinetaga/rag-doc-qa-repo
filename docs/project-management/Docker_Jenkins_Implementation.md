@@ -6,11 +6,12 @@ This document provides a **detailed and professional implementation guide** for 
 It explains how containerization and CI/CD automation support this application in development, testing, staging, and production.
 
 The document is specific to this project’s architecture, which includes:
-- FastAPI backend
-- Streamlit frontend
+- FastAPI backend with multi-source ingestion (uploads, Google Docs, SharePoint, SQL rows)
+- Streamlit front ends (API-backed, in-process, metrics dashboard)
 - Sentence Transformer embeddings
-- PostgreSQL + pgvector or FAISS vector backends
-- OpenAI / Hugging Face integration
+- FAISS / pgvector / hybrid vector backends
+- OpenAI / Hugging Face / `auto` integration
+- an optional retrieval + inference service split, wired by `docker-compose.yml`
 
 ---
 
@@ -27,16 +28,21 @@ The Docker and Jenkins implementation should achieve the following:
 ---
 
 ## 3. Application Context
-This application is a Python-based **RAG document QA solution** with two primary runtime surfaces:
+This application is a Python-based **RAG document QA solution**. All services run from the same image.
 
-| Service | Role |
-|---|---|
-| FastAPI (`app.main`) | API for upload and ask endpoints |
-| Streamlit (`streamlit_app.py`) | User-facing web interface |
+| Service | Module | Port | Role |
+|---|---|---|---|
+| API | `app.main` | 8000 | Ingestion, ask, and observability endpoints |
+| Retrieval (optional) | `app.retrieval_service` | 8001 | Embedding + vector search + rerank over a shared index |
+| Inference (optional) | `app.inference_service` | 8002 | LLM provider calls |
+| Streamlit | `streamlit_app.py` | 8501 | API-backed web interface |
 
-Supporting services:
-- PostgreSQL with `pgvector`
+The retrieval and inference services are used only when `RETRIEVAL_SERVICE_URL` / `INFERENCE_SERVICE_URL` are set; `docker-compose.yml` starts all three and wires them together.
+
+Supporting services and integrations:
+- PostgreSQL with `pgvector` (persistent / hybrid vector backend, and a `/ingest-database` source)
 - optional external LLM provider (OpenAI / Hugging Face)
+- Microsoft Graph (SharePoint ingestion) — needs `SHAREPOINT_*` credentials
 
 Because the application depends on Python libraries, environment variables, and database connectivity, **Docker** and **Jenkins** are suitable for ensuring repeatable builds and automated delivery.
 
@@ -62,14 +68,17 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+ENV API_WORKERS=1
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers ${API_WORKERS}"]
 ```
 
 ### What it does
 - uses a slim Python 3.11 base image,
 - copies the application into `/app`,
 - installs dependencies,
-- starts the FastAPI app using `uvicorn`.
+- starts the FastAPI app with `uvicorn`, worker count controlled by `API_WORKERS` (default `1`).
+
+`docker-compose.yml` reuses this image three times, overriding the command to run `app.retrieval_service` and `app.inference_service` alongside `app.main`.
 
 ---
 
@@ -105,18 +114,38 @@ Required runtime variables:
 ```env
 OPENAI_API_KEY=
 HUGGINGFACE_API_KEY=
-LLM_PROVIDER=openai
-LLM_MODEL=gpt-4o-mini
-VECTOR_DB_BACKEND=pgvector
+LLM_PROVIDER=openai                 # openai | huggingface | auto
+OPENAI_LLM_MODEL=gpt-4o-mini
+HUGGINGFACE_LLM_MODEL=google/flan-t5-base
+VECTOR_DB_BACKEND=pgvector          # faiss | pgvector | hybrid
 PGVECTOR_DSN=postgresql://postgres:<password>@localhost:5432/ragdb
 PGVECTOR_TABLE_NAME=rag_embeddings
 PGVECTOR_PRIMARY_SEARCH=pgvector
+API_WORKERS=1
+```
+
+Optional, per feature:
+
+```env
+# Service split
+RETRIEVAL_SERVICE_URL=http://retrieval:8001
+INFERENCE_SERVICE_URL=http://inference:8002
+
+# SharePoint ingestion
+SHAREPOINT_TENANT_ID=
+SHAREPOINT_CLIENT_ID=
+SHAREPOINT_CLIENT_SECRET=
+
+# Database ingestion (postgresql:// or sqlite:/// only)
+DB_INGESTION_DSN=
+DB_INGESTION_MAX_ROWS=5000
 ```
 
 ### Best Practice
 - do not bake secrets into the image,
-- inject secrets at runtime,
-- use separate env files for development, staging, and production.
+- inject secrets at runtime (compose `environment:` / Jenkins credentials),
+- use separate env files for development, staging, and production,
+- with `VECTOR_DB_BACKEND=faiss`, keep `API_WORKERS=1` — each worker holds its own in-memory index.
 
 ---
 
@@ -220,13 +249,15 @@ python -m pytest tests/ --maxfail=1 --disable-warnings
 ```
 
 ### Project-Specific Importance
-This project depends heavily on regression safety because recent improvements include:
-- section references,
-- answer deduplication,
-- pgvector integration,
-- fallback answer behavior.
+This project depends heavily on regression safety because the current behavior set includes:
+- section references and answer deduplication,
+- FAISS / pgvector / hybrid backends,
+- lexical reranking plus relevance and grounding gates,
+- response / retrieval caching,
+- Google Docs, SharePoint (Microsoft Graph), and read-only SQL-row ingestion,
+- provider fallback and `auto` mode.
 
-Running tests in Jenkins ensures those behaviors stay stable.
+Running the 76-test suite in Jenkins ensures those behaviors stay stable.
 
 ---
 
@@ -401,12 +432,15 @@ Developer Push -> Jenkins CI -> Pytest -> Docker Build -> Staging Deploy -> Vali
 
 ## 14. Future Enhancements
 Recommended next steps:
-- add Docker Compose for local full-stack startup,
-- add image publishing to Docker Hub or GHCR,
-- add a Jenkins stage for smoke tests,
-- add container health checks,
+- add a `.dockerignore` and a multi-stage / non-root image,
+- add image publishing to Docker Hub or GHCR with released tags,
+- add a Jenkins stage for lint (`black`/`isort`/`flake8`/`mypy`) and one for smoke tests,
+- add container `HEALTHCHECK` directives,
 - add automatic rollback support,
-- split API and UI services into separate deployable units.
+- add a managed PostgreSQL service to the compose file for a true local full stack,
+- containerize the Streamlit UI as its own service.
+
+> Docker Compose already exists (`docker-compose.yml`) for the api / retrieval / inference split; it currently expects an external reachable pgvector DSN.
 
 ---
 
