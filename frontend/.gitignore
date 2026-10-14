@@ -1,0 +1,18 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+dist-ssr/
+.vite/
+
+# Local env overrides (commit .env.example only; root .gitignore excludes .env.*)
+.env
+.env.local
+.env.*.local
+*.local
+!.env.example
+
+# Logs / editor
+*.log
+.DS_Store

@@ -5,9 +5,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Overview
 
 A modular Retrieval-Augmented Generation (RAG) pipeline for question-answering over uploaded
-documents (PDF, DOCX, TXT, image OCR) and Google Docs. It ships as a FastAPI service plus an
-in-process Streamlit demo, with pluggable vector backends (FAISS / pgvector) and LLM providers
-(OpenAI / Hugging Face).
+documents (PDF, DOCX, TXT, image OCR), Google Docs, SharePoint files, and read-only SQL rows.
+It ships as a FastAPI service with a React + Vite + TypeScript UI in `frontend/` (the production
+front end) plus Streamlit apps for local demos; pluggable vector backends (FAISS / pgvector /
+hybrid) and LLM providers (OpenAI / Hugging Face / auto).
 
 ## Commands
 
@@ -23,11 +24,14 @@ Run:
 
 ```bash
 uvicorn app.main:app --reload                 # FastAPI API on :8000
-streamlit run app/streamlit_demo.py           # in-process demo UI (also: streamlit run streamlit_app.py)
+(cd frontend && npm install && npm run dev)   # production UI (React + Vite + TS) on :5173
+streamlit run app/streamlit_demo.py           # dev/demo UI, runs the pipeline in-process
 streamlit run app/metrics_dashboard.py        # retrieval-metrics dashboard (synthetic sample data)
 docker compose up                             # 3-service split: api :8000, retrieval :8001, inference :8002
 psql "$PGVECTOR_DSN" -f scripts/create_pgvector_table.sql   # provision pgvector table (pgvector/hybrid only)
 ```
+
+Frontend build/checks (from `frontend/`): `npm run build` (`tsc && vite build`); `node_modules/.bin/tsc --noEmit` to type-check only.
 
 Tests (run with `python -m pytest` so the repo root lands on `sys.path`; `pytest.ini` sets
 `testpaths = tests` and `--import-mode=importlib`):
@@ -175,13 +179,22 @@ variable set to an empty string (`FOO=` in `.env`) counts as "set", so it shadow
   `rag._clear_caches()`. Any new test that touches module singletons or the rag caches must reset
   them the same way, since that state persists across tests in a process.
 
+## Frontend (`frontend/`)
+
+The **production UI** is a React + Vite + TypeScript app in `frontend/` (moved from
+`prototypes/ui/`). It talks to the FastAPI backend over HTTP — `main.py`'s CORS allow-list
+(`localhost:5173/5174/3000`) exists for it. `frontend/RAGQAApp.tsx` is the rendered component
+(self-contained, inline `fetch`, hardcoded `API_URL`); `frontend/src/` also holds a fuller typed
+API layer (`services.ts`, `types.ts`, `constants.ts`) that `RAGQAApp.tsx` does not yet use.
+`frontend/.env.example` documents the intended `VITE_*` config (the code does not read it yet).
+The Streamlit apps are now dev/demo tools, not the shipping UI.
+
 ## Gotchas
 
 - **Stale copies**: `rag-doc-qa-repo/` and `rag-doc-qa-repo-clone/` are old nested checkouts.
   Ignore them; the live code is `app/` at the repo root.
-- **`prototypes/ui/`** is a standalone TypeScript / Vite / React frontend with its own
-  `package.json` and `node_modules` — not part of the Python service. `main.py`'s CORS allow-list
-  (`localhost:5173/5174/3000`) exists for it.
+- `frontend/` still carries untracked migration-history `.md` / `.pdf` docs at its root — not
+  committed; treat `TYPESCRIPT_APP_GUIDE.md` etc. as historical.
 - Active git branch is `rag` (not `main` / `master`). Remote is
   `github.com/getinetaga/rag-doc-qa-repo`.
 - Image ingestion (`ingestion.extract_image`) needs a system Tesseract install for `pytesseract`.
