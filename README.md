@@ -22,6 +22,19 @@ It includes:
 
 ---
 
+## Security and reliability setup
+
+The API requires **per-user API keys and server-configured tenant/project grants**.
+Configure the external `RAG_API_USERS_FILE` policy before starting the server.
+There is no anonymous fallback. See [Security and reliability operations](docs/SECURITY_AND_RELIABILITY.md)
+for key provisioning, roles, approved database sources, client sign-in, deployment
+restrictions, and verification. Existing design reports describe historical
+behavior; this operational guide describes the hardening changes.
+
+Uploads use private staging and scoped replacement. Jobs/feedback are access
+controlled, and unsafe scope-dropping retrieval retries have been removed.
+Hybrid retrieval is **not** implemented or enabled by these changes.
+
 ## Quickstart (local development)
 
 Prerequisites:
@@ -45,7 +58,10 @@ pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-3. Configure API keys (optional for LLM features)
+3. Configure personal API access (required) and provider keys (optional for LLM features)
+
+First provision the external access policy described above and set
+`RAG_API_USERS_FILE`. Use one API worker while jobs remain process-local.
 
 Create a `.env` file in the repository root or set environment variables directly. Example `.env`:
 
@@ -63,7 +79,7 @@ SHAREPOINT_TENANT_ID=...
 SHAREPOINT_CLIENT_ID=...
 SHAREPOINT_CLIENT_SECRET=...
 
-# Database ingestion (/ingest-database) — optional default DSN, else pass per request:
+# Database ingestion uses approved source IDs; configure DSNs only on the server:
 DB_INGESTION_DSN=postgresql://readonly:...@localhost:5432/appdb
 DB_INGESTION_MAX_ROWS=5000
 ```
@@ -85,17 +101,20 @@ uvicorn app.main:app --reload
 API endpoints:
 
 - POST `/upload` — multipart file upload (pdf/docx/txt/images). Builds an in-memory index.
-- POST `/upload-google-doc` — JSON body with a Google Docs URL to fetch and index text.
+- POST `/upload-google-doc` — admin+ingest only; Google Docs URL to fetch and index text.
 - POST `/upload-sharepoint` — JSON body with a SharePoint file URL (or `drive_id`/`site_id` +
-  `item_id`); downloads it via Microsoft Graph and indexes it. Requires the `SHAREPOINT_*` env vars.
-- POST `/ingest-database` — JSON body with a `connection_string` and exactly one of `table` or a
-  read-only `query`; serializes the returned rows and indexes them. PostgreSQL and SQLite only.
+  `item_id`); admin+ingest only. Requires the `SHAREPOINT_*` env vars.
+- POST `/ingest-database` — JSON body with an authorized `source_id`; connection,
+  query/table, and maximum row count are defined by the operator, not the caller.
 - POST `/ask` — JSON body `{ "question": "..." }`, returns `{ "answer": "..." }`.
 - GET `/metrics`, POST `/feedback`, GET `/feedback/summary`, GET `/question-domains`,
   GET `/ingestion-jobs/{job_id}` — observability and async-ingestion status.
 
 All ingestion endpoints accept the same optional scoping fields (`tenant_id`, `collection_id`,
 `document_id`, `document_date`, `author`, `tag`, `source_system`).
+Tenant/project selectors must match server grants; they do not establish access.
+Use `Authorization: Bearer <personal-api-key>`. `GET /session` lists the caller's
+permitted projects. Metrics are admin-only; job access and feedback are private.
 
 6. Run the front end (production UI)
 
@@ -110,8 +129,9 @@ npm run dev        # http://localhost:5173  (npm run build for a production bund
 
 7. (Alternative) Run a Streamlit demo
 
-For quick local experiments there are Streamlit apps that run the pipeline in-process (ingest →
-index → ask).
+`streamlit_demo.py` runs the pipeline in-process for trusted local experiments;
+it bypasses API authentication. `streamlit_app.py` is the HTTP client and signs
+in with a personal API key.
 
 Both Streamlit entry points use explicit event handlers to keep session state predictable:
 - file-selection change handlers clear stale document/chat state,
@@ -119,8 +139,9 @@ Both Streamlit entry points use explicit event handlers to keep session state pr
 - clear-history handlers reset prior answers without restarting the app.
 
 ```bash
-streamlit run app/streamlit_demo.py
-# or use the root demo: streamlit run streamlit_app.py
+streamlit run app/streamlit_demo.py --server.address 127.0.0.1
+# or use the authenticated HTTP client:
+streamlit run app/streamlit_app.py --server.address 127.0.0.1
 ```
 
 ---

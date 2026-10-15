@@ -72,6 +72,54 @@ if 'document_id' not in st.session_state:
     st.session_state.document_id = ""
 
 
+def reset_private_state() -> None:
+    st.session_state.document_uploaded = False
+    st.session_state.document_name = ""
+    st.session_state.document_id = ""
+    st.session_state.chat_history = []
+    st.session_state.process_status = None
+    st.session_state.question_error = None
+    st.session_state.process_requested = False
+    st.session_state.question_requested = False
+
+
+api_key = st.sidebar.text_input("Personal API key", type="password", key="personal_api_key")
+if not api_key:
+    reset_private_state()
+    st.session_state.pop("authenticated_key", None)
+    st.info("Sign in with your personal API key to access permitted projects.")
+    st.stop()
+if api_key != st.session_state.get("authenticated_key"):
+    reset_private_state()
+    try:
+        login = requests.get(
+            f"{API_URL}/session", headers={"Authorization": f"Bearer {api_key}"}, timeout=10,
+        )
+        login.raise_for_status()
+        st.session_state.api_session = login.json()
+        st.session_state.authenticated_key = api_key
+    except requests.RequestException:
+        st.error("Sign-in failed. Check your API key and API availability.")
+        st.stop()
+scopes = st.session_state.api_session["scopes"]
+scope_index = st.sidebar.selectbox(
+    "Permitted project", range(len(scopes)),
+    format_func=lambda index: f"{scopes[index]['tenant_id']} / {scopes[index]['collection_id']}",
+)
+selected_scope = scopes[scope_index]
+if selected_scope != st.session_state.get("active_scope"):
+    reset_private_state()
+    st.session_state.active_scope = selected_scope
+API_HEADERS = {"Authorization": f"Bearer {api_key}"}
+
+
+def check_response(response) -> None:
+    if response.status_code == 401:
+        reset_private_state()
+        st.session_state.pop("authenticated_key", None)
+    response.raise_for_status()
+
+
 def _derive_document_id(filename: str) -> str:
     stem = Path(filename or "document").stem
     slug = re.sub(r"[^A-Za-z0-9_-]+", "_", stem).strip("_").lower()
@@ -95,6 +143,9 @@ def request_document_processing() -> None:
 
 
 def process_document() -> None:
+    if "ingest" not in st.session_state.api_session["roles"]:
+        st.session_state.process_status = ("error", "This API key has read-only access.")
+        return
     uploaded_file = st.session_state.get("uploaded_file_widget")
     if uploaded_file is None:
         st.session_state.process_status = ("error", "Please choose a file before processing.")
@@ -104,11 +155,29 @@ def process_document() -> None:
         document_id = _derive_document_id(uploaded_file.name)
         files = {"file": (uploaded_file.name, uploaded_file.getvalue(), uploaded_file.type)}
         data = {
-            "tenant_id": "default",
-            "collection_id": "default",
+            **selected_scope,
             "document_id": document_id,
         }
-        response = requests.post(f"{API_URL}/upload", files=files, data=data, timeout=60)
+        response = requests.post(f"{API_URL}/upload", files=files, data=data, headers=API_HEADERS, timeout=60)
+        check_response(response)
+        payload = response.json()
+        if payload.get("job_id"):
+            deadline = time.monotonic() + 240
+            while time.monotonic() < deadline:
+                response = requests.get(
+                    f"{API_URL}/ingestion-jobs/{payload['job_id']}", headers=API_HEADERS, timeout=10,
+                )
+                check_response(response)
+                job = response.json()
+                if job["status"] == "completed":
+                    break
+                if job["status"] == "failed":
+                    st.session_state.process_status = ("error", job.get("error", "Processing failed."))
+                    return
+                time.sleep(1)
+            else:
+                st.session_state.process_status = ("error", "Processing is still pending; the document is not ready.")
+                return
 
         if response.status_code == 200:
             st.session_state.document_uploaded = True
@@ -144,12 +213,12 @@ def submit_question() -> None:
             f"{API_URL}/ask",
             json={
                 "question": question,
-                "tenant_id": "default",
-                "collection_id": "default",
+                **selected_scope,
                 "document_id": st.session_state.document_id or "default",
             },
-            timeout=60,
+            headers=API_HEADERS, timeout=60,
         )
+        check_response(response)
 
         if response.status_code == 200:
             answer = response.json().get("answer", "")
@@ -194,6 +263,7 @@ with col1:
             type="primary",
             use_container_width=True,
             on_click=request_document_processing,
+            disabled="ingest" not in st.session_state.api_session["roles"],
         )
 
     if st.session_state.process_requested:

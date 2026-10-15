@@ -34,11 +34,20 @@ export interface DocumentState {
  * API response from upload endpoint
  */
 export interface UploadResponse {
-  status: "success" | "error";
-  document_id: string;
+  status: "success" | "error" | "queued";
+  document_id?: string;
+  job_id?: string;
+  chunks?: number;
   chunks_indexed?: number;
   embedding_model?: string;
   processing_time_seconds?: number;
+  error?: string;
+}
+
+export interface IngestionJob {
+  job_id: string;
+  status: "queued" | "running" | "completed" | "failed";
+  result?: UploadResponse;
   error?: string;
 }
 

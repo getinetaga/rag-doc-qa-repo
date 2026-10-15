@@ -12,22 +12,27 @@ package: `ingestion`, `chunking`, `embeddings`, `vector_store`, and `rag`.
 """
 
 import logging
+import hashlib
 import os
 import re
-import shutil
+import tempfile
 import threading
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import config
+from .auth import (
+    ApiUser, authenticate_before_body, authorize_current_user, authorize_scope, approved_database_source, database_connection,
+    get_current_user, load_policy, require_role,
+)
 from .chunking import chunk_text
 from .db_ingestion import extract_database_text
 from .embeddings import embed_text, get_model
-from .ingestion import extract_google_doc_text, extract_sharepoint_text, extract_text
+from .ingestion import _SUPPORTED_SUFFIXES, _extract_google_doc_id, extract_google_doc_text, extract_sharepoint_text, extract_text
 from .ingestion_jobs import enqueue_job, ensure_worker_started, get_job
 from .rag import generate_answer
 from .rag import classify_question_domain, get_question_domain_catalog
@@ -65,7 +70,9 @@ async def lifespan(app: FastAPI):
     Shutdown:
     - Closes any open vector-store database connections (e.g., pgvector).
     """
-    # --- startup ---
+    load_policy()
+    if config.API_WORKERS != 1:
+        raise RuntimeError("The in-process job queue requires API_WORKERS=1.")
     logger.info(
         "RAG Document QA API starting up — LLM provider: %s | vector backend: %s",
         getattr(config, "LLM_PROVIDER", "openai"),
@@ -81,7 +88,8 @@ async def lifespan(app: FastAPI):
             vector_store = VectorStore(dim=getattr(config, "EMBEDDING_DIM", 384))
             logger.info("Shared vector store initialized at startup.")
         except Exception as exc:
-            logger.warning("Vector store startup initialization deferred: %s", exc)
+            logger.error("Vector store startup initialization failed (%s).", type(exc).__name__)
+            raise
     yield
     # --- shutdown ---
     logger.info("RAG Document QA API shutting down.")
@@ -91,7 +99,11 @@ async def lifespan(app: FastAPI):
 
 
 # Initialize FastAPI application
-app = FastAPI(title="RAG Document QA", lifespan=lifespan)
+app = FastAPI(
+    title="RAG Document QA", lifespan=lifespan,
+    dependencies=[Depends(get_current_user)],
+)
+app.middleware("http")(authenticate_before_body)
 
 # Enable CORS for TypeScript frontend and local development
 app.add_middleware(
@@ -116,6 +128,7 @@ app.add_middleware(
 # hybrid combination of both.
 vector_store = None
 vector_store_lock = threading.RLock()
+_answer_slots = threading.BoundedSemaphore(config.MAX_CONCURRENT_ANSWERS)
 
 
 def _resolve_document_id(document_id: str, original_name: str) -> str:
@@ -125,6 +138,10 @@ def _resolve_document_id(document_id: str, original_name: str) -> str:
     if cleaned and cleaned.lower() != "default":
         return cleaned
 
+    if str(original_name).startswith(("http://", "https://", "sharepoint:")):
+        google_id = _extract_google_doc_id(str(original_name))
+        identity = f"google_docs:{google_id}" if google_id else str(original_name)
+        return "source_" + hashlib.sha256(identity.encode("utf-8")).hexdigest()[:24]
     stem = Path(str(original_name or "document")).stem
     slug = re.sub(r"[^A-Za-z0-9_-]+", "_", stem).strip("_").lower()
     return slug or "document"
@@ -134,8 +151,9 @@ def _ensure_vector_store(dim: int):
     """Lazily initialize a shared vector store instance."""
 
     global vector_store
-    if vector_store is None:
-        vector_store = VectorStore(dim=dim)
+    with vector_store_lock:
+        if vector_store is None:
+            vector_store = VectorStore(dim=dim)
     return vector_store
 
 
@@ -149,10 +167,13 @@ def _process_upload_job(
     author: str | None = None,
     tag: str | None = None,
     source_system: str | None = None,
+    owner_id: str | None = None,
 ):
     """Process an uploaded file and update the scoped vector index."""
 
     try:
+        if owner_id is not None:
+            authorize_current_user(owner_id, tenant_id, collection_id, role="ingest")
         text = extract_text(file_path)
         return _index_text_content(
             text=text,
@@ -164,6 +185,7 @@ def _process_upload_job(
             author=author,
             tag=tag,
             source_system=source_system,
+            owner_id=owner_id,
         )
     finally:
         if os.path.exists(file_path):
@@ -180,6 +202,7 @@ def _index_text_content(
     author: str | None = None,
     tag: str | None = None,
     source_system: str | None = None,
+    owner_id: str | None = None,
 ):
     """Chunk, embed, and index text content in the scoped vector store."""
 
@@ -208,39 +231,33 @@ def _index_text_content(
     metadata_list = [dict(metadata_base) for _ in chunks]
 
     with vector_store_lock:
-        clear = getattr(store, "clear", None)
-        if callable(clear):
-            clear(
-                source_document=effective_document_id,
-                filters={
-                    "tenant_id": tenant_id,
-                    "collection_id": collection_id,
-                    "document_id": effective_document_id,
-                },
-            )
-
-        store.add(
+        if owner_id is not None:
+            authorize_current_user(owner_id, tenant_id, collection_id, role="ingest")
+        store.replace(
             embeddings,
             chunks,
             source_document=effective_document_id,
             metadata_list=metadata_list,
+            filters={
+                "tenant_id": tenant_id,
+                "collection_id": collection_id,
+                "document_id": effective_document_id,
+            },
         )
 
     logger.info(
-        "Indexed '%s': %d chunks via '%s' backend (tenant=%s collection=%s document=%s).",
-        original_name,
+        "Indexed %d chunks via '%s' backend (tenant=%s collection=%s).",
         len(chunks),
         getattr(store, "backend", "faiss"),
         tenant_id,
         collection_id,
-        effective_document_id,
     )
 
     return {"message": "Document processed successfully", "chunks": len(chunks)}
 
 
 @app.post("/upload")
-async def upload_document(
+def upload_document(
     file: UploadFile = File(...),
     tenant_id: str = Form("default"),
     collection_id: str = Form("default"),
@@ -249,6 +266,7 @@ async def upload_document(
     author: str | None = Form(None),
     tag: str | None = Form(None),
     source_system: str | None = Form(None),
+    user: ApiUser = Depends(get_current_user),
 ):
     """Upload and process a document.
 
@@ -264,10 +282,12 @@ async def upload_document(
     `vector_store` so the `/ask` endpoint can use it.
     """
 
-    global vector_store
-
-    logger.info("Upload request received: %s", file.filename)
+    scope = authorize_scope(user, tenant_id, collection_id, role="ingest")
+    tenant_id, collection_id = scope.tenant_id, scope.collection_id
     request_started_at = time.monotonic()
+    suffix = Path((file.filename or "").replace("\\", "/")).suffix.lower()
+    if suffix not in _SUPPORTED_SUFFIXES:
+        raise HTTPException(422, "Unsupported file type.")
 
     declared_size = int(getattr(file, "size", 0) or 0)
     if declared_size and declared_size > config.MAX_UPLOAD_FILE_SIZE_BYTES:
@@ -279,32 +299,22 @@ async def upload_document(
             ),
         )
 
-    # Save uploaded file to a temporary local path.
-    file_path = f"temp_{file.filename}"
-    with open(file_path, "wb") as f:
-        shutil.copyfileobj(file.file, f)
-
+    staging = tempfile.NamedTemporaryFile(prefix="rag-upload-", suffix=suffix, delete=False)
+    file_path = staging.name
     remove_temp_file = True
 
     try:
-        try:
-            file_size = int(getattr(file, "size", 0) or os.path.getsize(file_path))
-        except OSError:
-            file_size = 0
-
-        if file_size > config.MAX_UPLOAD_FILE_SIZE_BYTES:
-            raise HTTPException(
-                status_code=413,
-                detail=(
-                    f"File too large. Maximum allowed size is "
-                    f"{config.MAX_UPLOAD_FILE_SIZE_BYTES} bytes."
-                ),
-            )
+        file_size = 0
+        with staging:
+            while chunk := file.file.read(64 * 1024):
+                file_size += len(chunk)
+                if file_size > config.MAX_UPLOAD_FILE_SIZE_BYTES:
+                    raise HTTPException(413, "File exceeds the upload size limit.")
+                staging.write(chunk)
 
         should_queue = config.ASYNC_INGESTION_MIN_BYTES == 0 or file_size >= config.ASYNC_INGESTION_MIN_BYTES
 
         if should_queue:
-            remove_temp_file = False
             job_id = enqueue_job(
                 _process_upload_job,
                 file_path,
@@ -316,14 +326,14 @@ async def upload_document(
                 author,
                 tag,
                 source_system,
+                job_owner=user.user_id,
+                job_scope=(tenant_id, collection_id),
+                owner_id=user.user_id,
             )
+            remove_temp_file = False
             logger.info(
-                "Queued '%s' for background ingestion (job=%s, tenant=%s collection=%s document=%s, size=%d bytes).",
-                file.filename,
+                "Queued background ingestion (job=%s, size=%d bytes).",
                 job_id,
-                tenant_id,
-                collection_id,
-                document_id,
                 file_size,
             )
             response = {
@@ -344,6 +354,7 @@ async def upload_document(
             author,
             tag,
             source_system,
+            owner_id=user.user_id,
         )
         slo_metrics.record_request(time.monotonic() - request_started_at, success=True)
         return result
@@ -356,22 +367,25 @@ async def upload_document(
 
 
 @app.post("/upload-google-doc", response_model=IngestResponse)
-async def upload_google_doc(req: GoogleDocIngestRequest):
+def upload_google_doc(req: GoogleDocIngestRequest, user: ApiUser = Depends(get_current_user)):
     """Ingest a Google Doc by URL and index it in the vector store."""
 
+    scope = authorize_scope(user, req.tenant_id, req.collection_id, role="ingest")
+    require_role(user, "admin")
     request_started_at = time.monotonic()
     try:
         text = extract_google_doc_text(req.google_doc_url)
         result = _index_text_content(
             text=text,
-            tenant_id=req.tenant_id,
-            collection_id=req.collection_id,
+            tenant_id=scope.tenant_id,
+            collection_id=scope.collection_id,
             document_id=req.document_id,
             original_name=req.google_doc_url,
             document_date=req.document_date,
             author=req.author,
             tag=req.tag,
             source_system=req.source_system,
+            owner_id=user.user_id,
         )
         slo_metrics.record_request(time.monotonic() - request_started_at, success=True)
         return result
@@ -381,7 +395,7 @@ async def upload_google_doc(req: GoogleDocIngestRequest):
 
 
 @app.post("/upload-sharepoint", response_model=IngestResponse)
-async def upload_sharepoint(req: SharePointIngestRequest):
+def upload_sharepoint(req: SharePointIngestRequest, user: ApiUser = Depends(get_current_user)):
     """Ingest a SharePoint / OneDrive-for-Business document via Microsoft Graph.
 
     Accepts either a shareable ``sharepoint_url`` or an ``item_id`` plus
@@ -391,6 +405,8 @@ async def upload_sharepoint(req: SharePointIngestRequest):
     ``app/config.py`` for the auth caveat.
     """
 
+    scope = authorize_scope(user, req.tenant_id, req.collection_id, role="ingest")
+    require_role(user, "admin")
     request_started_at = time.monotonic()
     try:
         text = extract_sharepoint_text(
@@ -399,17 +415,18 @@ async def upload_sharepoint(req: SharePointIngestRequest):
             drive_id=req.drive_id,
             item_id=req.item_id,
         )
-        original_name = req.sharepoint_url or req.item_id or "sharepoint_document"
+        original_name = req.sharepoint_url or f"sharepoint:{req.site_id}:{req.drive_id}:{req.item_id}"
         result = _index_text_content(
             text=text,
-            tenant_id=req.tenant_id,
-            collection_id=req.collection_id,
+            tenant_id=scope.tenant_id,
+            collection_id=scope.collection_id,
             document_id=req.document_id,
             original_name=original_name,
             document_date=req.document_date,
             author=req.author,
             tag=req.tag,
             source_system=req.source_system,
+            owner_id=user.user_id,
         )
         slo_metrics.record_request(time.monotonic() - request_started_at, success=True)
         return result
@@ -419,34 +436,43 @@ async def upload_sharepoint(req: SharePointIngestRequest):
 
 
 @app.post("/ingest-database", response_model=IngestResponse)
-async def ingest_database(req: DatabaseIngestRequest):
+def ingest_database(req: DatabaseIngestRequest, user: ApiUser = Depends(get_current_user)):
     """Ingest rows from a SQL database via a single read-only ``SELECT``.
 
-    Runs ``SELECT * FROM <table>`` or a caller-supplied read-only query against
-    PostgreSQL or SQLite, serializes each row to a line of text, and indexes it
-    through the same chunk/embed/store path as a document upload. Statement
-    safety and row caps live in ``app/db_ingestion.py``.
+    The source grant, connection environment-variable name and fixed query/table
+    come from the server access policy, never from caller-selected SQL or paths.
     """
 
+    scope = authorize_scope(user, req.tenant_id, req.collection_id, role="ingest")
+    if not req.source_id:
+        raise HTTPException(403, "Use an administrator-approved source_id.")
+    source = approved_database_source(user, req.source_id, scope)
+    connection = database_connection(source)
+    row_limit = min(source.max_rows, config.DB_INGESTION_MAX_ROWS)
+    if req.max_rows is not None:
+        if req.max_rows < 1:
+            raise HTTPException(422, "max_rows must be positive.")
+        row_limit = min(row_limit, req.max_rows)
     request_started_at = time.monotonic()
     try:
         text = extract_database_text(
-            connection_string=req.connection_string,
-            query=req.query,
-            table=req.table,
-            max_rows=req.max_rows,
+            connection_string=connection,
+            query=source.query,
+            table=source.table,
+            max_rows=row_limit,
         )
-        original_name = req.table or "database_query"
+        original_name = req.source_id
         result = _index_text_content(
             text=text,
-            tenant_id=req.tenant_id,
-            collection_id=req.collection_id,
+            tenant_id=scope.tenant_id,
+            collection_id=scope.collection_id,
             document_id=req.document_id,
             original_name=original_name,
             document_date=req.document_date,
             author=req.author,
             tag=req.tag,
             source_system=req.source_system,
+            owner_id=user.user_id,
         )
         slo_metrics.record_request(time.monotonic() - request_started_at, success=True)
         return result
@@ -456,7 +482,7 @@ async def ingest_database(req: DatabaseIngestRequest):
 
 
 @app.post("/ask", response_model=AnswerResponse)
-async def ask_question(req: QuestionRequest):
+def ask_question(req: QuestionRequest, user: ApiUser = Depends(get_current_user)):
     """Answer a user question using the currently loaded vector store.
 
     If no document has been uploaded yet, returns a short message informing the
@@ -464,23 +490,37 @@ async def ask_question(req: QuestionRequest):
     and delegates answer generation to `generate_answer`.
     """
 
-    if not vector_store:
+    scope = authorize_scope(user, req.tenant_id, req.collection_id)
+    with vector_store_lock:
+        store = vector_store
+    if store is None:
         return {"answer": "No document uploaded yet."}
 
-    logger.info("Question received: %s", req.question)
-    domain = classify_question_domain(req.question)
-    with vector_store_lock:
+    if not _answer_slots.acquire(blocking=False):
+        logger.warning("Question rejected: concurrent answer capacity reached.")
+        slo_metrics.record_request(0.0, success=False)
+        raise HTTPException(
+            status_code=503,
+            detail="Question capacity reached. Please retry shortly.",
+            headers={"Retry-After": "1"},
+        )
+    logger.info("Question received for an authorized project.")
+    try:
+        domain = classify_question_domain(req.question)
         answer = generate_answer(
             req.question,
-            vector_store,
-            tenant_id=req.tenant_id,
-            collection_id=req.collection_id,
+            store,
+            tenant_id=scope.tenant_id,
+            collection_id=scope.collection_id,
             document_id=req.document_id,
             document_date=req.document_date,
             author=req.author,
             tag=req.tag,
             source_system=req.source_system,
         )
+        authorize_current_user(user.user_id, scope.tenant_id, scope.collection_id)
+    finally:
+        _answer_slots.release()
     logger.debug("Answer generated (%d chars).", len(answer))
     return {"answer": answer, "question_domain": domain}
 
@@ -493,24 +533,41 @@ async def list_question_domains():
 
 
 @app.get("/ingestion-jobs/{job_id}")
-async def get_ingestion_job(job_id: str):
+async def get_ingestion_job(job_id: str, user: ApiUser = Depends(get_current_user)):
     job = get_job(job_id)
-    if job is None:
+    if job is None or job.get("owner_id") != user.user_id:
         raise HTTPException(status_code=404, detail="Job not found")
-    return job
+    authorize_scope(
+        user, job.get("tenant_id"), job.get("collection_id"),
+        role="ingest" if "ingest" in user.roles else "read",
+    )
+    return {key: value for key, value in job.items() if key != "owner_id"}
 
 
 @app.get("/metrics")
-async def get_metrics():
+async def get_metrics(user: ApiUser = Depends(get_current_user)):
+    require_role(user, "admin")
     return slo_metrics.snapshot()
 
 
 @app.post("/feedback", response_model=FeedbackResponse)
-async def submit_feedback(req: FeedbackRequest):
-    feedback_id = feedback_store.add_feedback(req.model_dump())
+async def submit_feedback(req: FeedbackRequest, user: ApiUser = Depends(get_current_user)):
+    scope = authorize_scope(user, req.tenant_id, req.collection_id)
+    entry = {**req.model_dump(), **scope.model_dump(), "owner_id": user.user_id}
+    feedback_id = feedback_store.add_feedback(entry)
     return {"feedback_id": feedback_id, "status": "recorded"}
 
 
 @app.get("/feedback/summary")
-async def feedback_summary():
-    return feedback_store.summary()
+async def feedback_summary(user: ApiUser = Depends(get_current_user)):
+    require_role(user, "read")
+    return feedback_store.summary(owner_id=user.user_id, scopes=user.scopes)
+
+
+@app.get("/session")
+def session(user: ApiUser = Depends(get_current_user)):
+    return {
+        "user_id": user.user_id,
+        "roles": sorted(user.roles),
+        "scopes": [scope.model_dump() for scope in user.scopes],
+    }

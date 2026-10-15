@@ -56,6 +56,10 @@ def _load_dotenv_if_present():
 
 _load_dotenv_if_present()
 
+# Mount the policy outside the application/build context. It contains key hashes only.
+RAG_API_USERS_FILE = os.getenv("RAG_API_USERS_FILE", "")
+RAG_SERVICE_TOKEN = os.getenv("RAG_SERVICE_TOKEN", "")
+
 # Read configuration values from the environment (or .env loaded above).
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
@@ -105,6 +109,10 @@ RETRIEVAL_RERANK_POOL_SIZE = int(os.getenv("RETRIEVAL_RERANK_POOL_SIZE", str(max
 # The optional service URLs let the API route retrieval and inference to
 # dedicated services backed by a shared persistent vector store.
 API_WORKERS = int(os.getenv("API_WORKERS", "1"))
+MAX_CONCURRENT_ANSWERS = int(os.getenv("MAX_CONCURRENT_ANSWERS", "4"))
+LLM_REQUEST_TIMEOUT_SECONDS = int(os.getenv("LLM_REQUEST_TIMEOUT_SECONDS", "30"))
+if MAX_CONCURRENT_ANSWERS <= 0 or LLM_REQUEST_TIMEOUT_SECONDS <= 0:
+	raise ValueError("Answer concurrency and provider timeout must be positive.")
 RETRIEVAL_SERVICE_URL = os.getenv("RETRIEVAL_SERVICE_URL", "").rstrip("/")
 INFERENCE_SERVICE_URL = os.getenv("INFERENCE_SERVICE_URL", "").rstrip("/")
 

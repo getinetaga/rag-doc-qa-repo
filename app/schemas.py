@@ -10,7 +10,7 @@ for additional metadata (e.g., provenance, confidence) in the future.
 
 from typing import Literal
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, Field, model_validator
 # BaseModel is used as the base class for defining the Pydantic models (schemas) for request and response 
 # bodies in the FastAPI application. It provides data validation and serialization capabilities, ensuring that 
 # incoming requests and outgoing responses conform to the defined structure.
@@ -23,7 +23,7 @@ class QuestionRequest(BaseModel):
         question: The user's natural-language question as a string.
     """
 
-    question: str
+    question: str = Field(min_length=1, max_length=8000)
     tenant_id: str = "default"
     collection_id: str = "default"
     document_id: str = "default"
@@ -109,10 +109,12 @@ class SharePointIngestRequest(BaseModel):
 class DatabaseIngestRequest(BaseModel):
     """Ingest rows from a SQL database via a single read-only ``SELECT``.
 
-    Supply exactly one of ``table`` or ``query``. ``connection_string`` may be
-    omitted to fall back to the ``DB_INGESTION_DSN`` environment variable.
+    Public requests use an administrator-approved ``source_id``. Legacy raw
+    connection/table/query fields are parsed only to return an explicit denial;
+    they are never used by the API to select a connection or SQL statement.
     """
 
+    source_id: str | None = None
     connection_string: str | None = None
     query: str | None = None
     table: str | None = None
@@ -127,6 +129,10 @@ class DatabaseIngestRequest(BaseModel):
 
     @model_validator(mode="after")
     def _require_query_xor_table(self) -> "DatabaseIngestRequest":
+        if self.source_id:
+            if self.connection_string is not None or self.table is not None or self.query is not None:
+                raise ValueError("Use source_id without a connection string, table, or query.")
+            return self
         if bool(self.query) == bool(self.table):
             raise ValueError("Provide exactly one of 'query' or 'table'.")
         return self

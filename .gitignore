@@ -1,5 +1,7 @@
 .env
 .env.*
+# Local API access policies (keep outside the repository).
+rag-access*.json
 # Python cache
 __pycache__/
 *.py[cod]

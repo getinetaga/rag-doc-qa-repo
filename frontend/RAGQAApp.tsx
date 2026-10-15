@@ -7,7 +7,7 @@
  * Features:
  * - Multi-user support with authentication
  * - Per-user document isolation via tenant_id
- * - Session-based login with localStorage persistence
+ * - In-memory API-key authentication with server-granted scopes
  * 
  * @see MIGRATION_COMPLETE.md for detailed migration guide
  */
@@ -17,9 +17,12 @@ import { styles } from "./src/styles";
 import { ChatMessage, DocumentState, ProcessStatus } from "./src/types";
 import { formatTimestamp, deriveDocumentId, deriveDocumentIdFromUrl } from "./src/utils";
 import LoginScreen from "./src/LoginScreen";
-import { loginUser, logoutUser, loadSession, User } from "./src/auth";
-
-const API_URL = "http://127.0.0.1:8000";
+import {
+  loginUser, logoutUser, getCurrentUser, getCurrentScope, getSessionGeneration,
+  isCurrentSession, selectScope, subscribeSession, User, Scope,
+} from "./src/auth";
+import apiService from "./src/services";
+import { API_URL } from "./src/constants";
 
 // ── Balloons Animation Component ────────────────────────────────────────────
 
@@ -78,6 +81,7 @@ export default function RAGQAApp() {
   // Authentication State
   const [user, setUser] = useState<User | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
+  const [scope, setScope] = useState<Scope | null>(null);
 
   // State Management
   const [document, setDocument] = useState<DocumentState>({
@@ -102,32 +106,55 @@ export default function RAGQAApp() {
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
+  const workRef = useRef(new AbortController());
+  const balloonTimerRef = useRef<ReturnType<typeof setTimeout>>();
 
-  // Load user session on mount
+  const resetWorkspace = () => {
+    workRef.current.abort();
+    workRef.current = new AbortController();
+    clearTimeout(balloonTimerRef.current);
+    setDocument({ uploaded: false, name: "", sizeKb: 0, id: "" });
+    setChatHistory([]);
+    setSelectedFile(null);
+    setSharePointUrl("");
+    setQuestion("");
+    setProcessStatus(null);
+    setQuestionError(null);
+    setIsProcessing(false);
+    setIsAsking(false);
+    setShowBalloons(false);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
   useEffect(() => {
-    const savedUser = loadSession();
-    if (savedUser) {
-      setUser(savedUser);
-    }
+    const unsubscribe = subscribeSession((message) => {
+      resetWorkspace();
+      setUser(getCurrentUser());
+      setScope(getCurrentScope());
+      setAuthError(message || null);
+      setApiStatus("offline");
+    });
+    return () => {
+      unsubscribe();
+      workRef.current.abort();
+      clearTimeout(balloonTimerRef.current);
+    };
   }, []);
 
   // Check API Health
   useEffect(() => {
+    if (!user) return;
+    let active = true;
+    const version = getSessionGeneration();
     const checkApiHealth = async () => {
-      try {
-        const response = await fetch(`${API_URL}/docs`, {
-          signal: AbortSignal.timeout(2000),
-        });
-        setApiStatus(response.ok ? "online" : "error");
-      } catch {
-        setApiStatus("offline");
-      }
+      const online = await apiService.checkHealth();
+      if (active && isCurrentSession(version)) setApiStatus(online ? "online" : "offline");
     };
 
     checkApiHealth();
     const interval = setInterval(checkApiHealth, 5000);
-    return () => clearInterval(interval);
-  }, []);
+    return () => { active = false; clearInterval(interval); };
+  }, [user, scope]);
 
   // Auto-scroll to bottom of chat
   useEffect(() => {
@@ -135,35 +162,34 @@ export default function RAGQAApp() {
   }, [chatHistory]);
 
   // Handle Login
-  const handleLogin = (email: string) => {
-    const newUser = loginUser(email, "demo");
-    if (newUser) {
-      setUser(newUser);
-      setAuthError(null);
-      setChatHistory([]);
-      setDocument({ uploaded: false, name: "", sizeKb: 0, id: "" });
-    } else {
-      setAuthError("Login failed. Please try again.");
+  const handleLogin = async (key: string) => {
+    try {
+      await loginUser(key, API_URL);
+    } catch {
+      setAuthError("Unable to sign in. Check your individual API key and server connection.");
+      throw new Error("Sign-in failed.");
     }
   };
 
   // Handle Logout
   const handleLogout = () => {
     logoutUser();
-    setUser(null);
-    setChatHistory([]);
-    setDocument({ uploaded: false, name: "", sizeKb: 0, id: "" });
   };
 
   // If not authenticated, show login screen
   if (!user) {
-    return <LoginScreen onLogin={handleLogin} />;
+    return <LoginScreen onLogin={handleLogin} authError={authError} />;
   }
+
+  const canIngest = user.roles.includes("ingest");
+  const canRead = user.roles.includes("read");
+  const isAdmin = user.roles.includes("admin");
 
   // Handle File Selection
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
+      resetWorkspace();
       setSelectedFile(file);
       setSharePointUrl("");
       setDocument({ uploaded: false, name: "", sizeKb: 0, id: "" });
@@ -175,55 +201,48 @@ export default function RAGQAApp() {
 
   // Process Document
   const handleProcessDocument = async () => {
+    if (!canIngest || !scope || isProcessing) return;
     if (!selectedFile) {
       setProcessStatus({ type: "error", message: "Please select a file first." });
       return;
     }
 
     setIsProcessing(true);
-    setProcessStatus(null);
+    setDocument({ uploaded: false, name: "", sizeKb: 0, id: "" });
+    setChatHistory([]);
+    setProcessStatus({ type: "info", message: "Processing document. Queued uploads are checked until indexing completes." });
+    const version = getSessionGeneration();
+    const signal = workRef.current.signal;
 
     try {
       const documentId = deriveDocumentId(selectedFile.name);
-      const formData = new FormData();
-      formData.append("file", selectedFile);
-      formData.append("tenant_id", user.id);  // Use user ID for document isolation
-      formData.append("collection_id", "default");
-      formData.append("document_id", documentId);
-
-      const response = await fetch(`${API_URL}/upload`, {
-        method: "POST",
-        body: formData,
-        signal: AbortSignal.timeout(60000),
+      await apiService.uploadDocument(
+        selectedFile, documentId, scope.tenant_id, scope.collection_id, signal
+      );
+      if (!isCurrentSession(version) || signal.aborted) return;
+      setDocument({
+        uploaded: true,
+        name: selectedFile.name,
+        sizeKb: selectedFile.size / 1024,
+        id: documentId,
       });
-
-      if (response.ok) {
-        setDocument({
-          uploaded: true,
-          name: selectedFile.name,
-          sizeKb: selectedFile.size / 1024,
-          id: documentId,
-        });
-        setChatHistory([]);
-        setProcessStatus({ type: "success", message: "Document processed successfully!" });
-        setShowBalloons(true);
-        setTimeout(() => setShowBalloons(false), 4000);
-      } else {
-        const text = await response.text();
-        setProcessStatus({ type: "error", message: `Error: ${text}` });
-      }
-    } catch (error: any) {
-      setProcessStatus({
+      setChatHistory([]);
+      setProcessStatus({ type: "success", message: "Document processed successfully!" });
+      setShowBalloons(true);
+      balloonTimerRef.current = setTimeout(() => setShowBalloons(false), 4000);
+    } catch (error) {
+      if (isCurrentSession(version) && !signal.aborted) setProcessStatus({
         type: "error",
-        message: `Connection error: ${error.message}. Make sure the FastAPI server is running on ${API_URL}`,
+        message: error instanceof Error ? error.message : "Document processing failed.",
       });
     } finally {
-      setIsProcessing(false);
+      if (isCurrentSession(version) && !signal.aborted) setIsProcessing(false);
     }
   };
 
   // Process a SharePoint file by URL (downloaded server-side via Microsoft Graph)
   const handleProcessSharePoint = async () => {
+    if (!canIngest || !isAdmin || !scope || isProcessing) return;
     const url = sharepointUrl.trim();
     if (!url) {
       setProcessStatus({ type: "error", message: "Enter a SharePoint file URL first." });
@@ -231,55 +250,46 @@ export default function RAGQAApp() {
     }
 
     setIsProcessing(true);
-    setProcessStatus(null);
+    setDocument({ uploaded: false, name: "", sizeKb: 0, id: "" });
+    setChatHistory([]);
+    setProcessStatus({ type: "info", message: "Processing SharePoint file. Waiting for indexing to complete." });
+    const version = getSessionGeneration();
+    const signal = workRef.current.signal;
 
     try {
       const documentId = deriveDocumentIdFromUrl(url);
-      const response = await fetch(`${API_URL}/upload-sharepoint`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          sharepoint_url: url,
-          tenant_id: user.id, // Use user ID for document isolation
-          collection_id: "default",
-          document_id: documentId,
-        }),
-        signal: AbortSignal.timeout(60000),
+      const data = await apiService.uploadSharePoint(
+        url, documentId, scope.tenant_id, scope.collection_id, signal
+      );
+      if (!isCurrentSession(version) || signal.aborted) return;
+      setSelectedFile(null);
+      setDocument({
+        uploaded: true,
+        name: url.split("/").filter(Boolean).pop() || url,
+        sizeKb: 0,
+        id: documentId,
       });
-
-      if (response.ok) {
-        const data = await response.json().catch(() => ({}));
-        setSelectedFile(null);
-        setDocument({
-          uploaded: true,
-          name: url.split("/").filter(Boolean).pop() || url,
-          sizeKb: 0,
-          id: documentId,
-        });
-        setChatHistory([]);
-        setProcessStatus({
-          type: "success",
-          message: `SharePoint file indexed${data.chunks ? ` (${data.chunks} chunks)` : ""}!`,
-        });
-        setShowBalloons(true);
-        setTimeout(() => setShowBalloons(false), 4000);
-      } else {
-        const text = await response.text();
-        setProcessStatus({ type: "error", message: `Error: ${text}` });
-      }
-    } catch (error: any) {
+      setChatHistory([]);
       setProcessStatus({
+        type: "success",
+        message: `SharePoint file indexed${data.chunks ? ` (${data.chunks} chunks)` : ""}!`,
+      });
+      setShowBalloons(true);
+      balloonTimerRef.current = setTimeout(() => setShowBalloons(false), 4000);
+    } catch (error) {
+      if (isCurrentSession(version) && !signal.aborted) setProcessStatus({
         type: "error",
-        message: `Connection error: ${error.message}. Make sure the FastAPI server is running on ${API_URL}`,
+        message: error instanceof Error ? error.message : "SharePoint processing failed.",
       });
     } finally {
-      setIsProcessing(false);
+      if (isCurrentSession(version) && !signal.aborted) setIsProcessing(false);
     }
   };
 
   // Submit Question
   const handleSubmitQuestion = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!canRead || !scope || isAsking) return;
 
     const trimmedQuestion = question.trim();
     if (!trimmedQuestion) {
@@ -289,40 +299,30 @@ export default function RAGQAApp() {
 
     setIsAsking(true);
     setQuestionError(null);
+    const version = getSessionGeneration();
+    const signal = workRef.current.signal;
 
     try {
-      const response = await fetch(`${API_URL}/ask`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+      const data = await apiService.askQuestion(
+        trimmedQuestion, document.id || "default", scope.tenant_id, scope.collection_id, signal
+      );
+      if (!isCurrentSession(version) || signal.aborted) return;
+      const answer = data.answer || "";
+      setChatHistory((history) => [
+        ...history,
+        {
           question: trimmedQuestion,
-          tenant_id: user.id,  // Use user ID for document isolation
-          collection_id: "default",
-          document_id: document.id || "default",
-        }),
-        signal: AbortSignal.timeout(60000),
-      });
-
-      if (response.ok) {
-        const data = await response.json();
-        const answer = data.answer || "";
-        setChatHistory([
-          ...chatHistory,
-          {
-            question: trimmedQuestion,
-            answer,
-            timestamp: formatTimestamp(),
-          },
-        ]);
-        setQuestion("");
-      } else {
-        const text = await response.text();
-        setQuestionError(`Error: ${text}`);
+          answer,
+          timestamp: formatTimestamp(),
+        },
+      ]);
+      setQuestion("");
+    } catch (error) {
+      if (isCurrentSession(version) && !signal.aborted) {
+        setQuestionError(error instanceof Error ? error.message : "Question failed.");
       }
-    } catch (error: any) {
-      setQuestionError(`Connection error: ${error.message}`);
     } finally {
-      setIsAsking(false);
+      if (isCurrentSession(version) && !signal.aborted) setIsAsking(false);
     }
   };
 
@@ -348,8 +348,9 @@ export default function RAGQAApp() {
         <div style={styles.column}>
           <div style={styles.card}>
             <h2 style={styles.sectionTitle}>📤 Upload Document</h2>
+            {canIngest ? <>
             <p style={styles.sectionDescription}>
-              Upload a PDF, DOCX, TXT, or image file — or link a SharePoint file — to get started
+              Upload a PDF, DOCX, TXT, or image file{isAdmin ? " — or link a SharePoint file" : ""} to get started
             </p>
 
             <div style={styles.fileInputWrapper}>
@@ -358,10 +359,12 @@ export default function RAGQAApp() {
                 type="file"
                 accept=".pdf,.docx,.txt,.png,.jpg,.jpeg,.bmp,.tiff,.tif,.webp,.gif"
                 onChange={handleFileChange}
+                disabled={isProcessing}
                 style={styles.fileInput}
               />
               <button
                 onClick={() => fileInputRef.current?.click()}
+                disabled={isProcessing}
                 style={styles.fileButton}
               >
                 Choose File
@@ -391,6 +394,7 @@ export default function RAGQAApp() {
               </>
             )}
 
+            {isAdmin && <>
             <div style={{ margin: "16px 0 8px", color: "#999", fontSize: "0.85rem" }}>
               — or —
             </div>
@@ -398,8 +402,8 @@ export default function RAGQAApp() {
               type="url"
               value={sharepointUrl}
               onChange={(e) => {
+                resetWorkspace();
                 setSharePointUrl(e.target.value);
-                if (e.target.value) setSelectedFile(null);
               }}
               placeholder="Paste a SharePoint file URL"
               style={styles.questionInput}
@@ -419,6 +423,38 @@ export default function RAGQAApp() {
                 {isProcessing ? "Fetching from SharePoint..." : "🗂️ Process SharePoint File"}
               </button>
             )}
+            </>}
+            </> : (
+              <div style={styles.infoBox}>
+                {canRead
+                  ? "Read-only access. Ask questions about documents already indexed in your selected project."
+                  : "Your key does not have permission to ingest documents."}
+                {canRead && <>
+                <label htmlFor="existing-document" style={{ display: "block", marginTop: "8px" }}>
+                  Document ID (optional)
+                </label>
+                <input
+                  id="existing-document"
+                  value={document.id}
+                  onChange={(e) => {
+                    resetWorkspace();
+                    setDocument({ uploaded: false, name: "", sizeKb: 0, id: e.target.value });
+                  }}
+                  placeholder="Leave blank to search the project"
+                  style={styles.questionInput}
+                />
+                </>}
+              </div>
+            )}
+
+            {isProcessing && (
+              <button style={styles.secondaryButton} onClick={() => {
+                resetWorkspace();
+                setProcessStatus({ type: "info", message: "Stopped waiting. An accepted job may still finish on the server." });
+              }}>
+                Cancel waiting
+              </button>
+            )}
 
             {processStatus && (
               <div
@@ -430,7 +466,7 @@ export default function RAGQAApp() {
                     : styles.infoBox
                 }
               >
-                {processStatus.type === "success" ? "✅" : "❌"} {processStatus.message}
+                {processStatus.type === "success" ? "✅" : processStatus.type === "info" ? "ℹ️" : "❌"} {processStatus.message}
               </div>
             )}
 
@@ -447,7 +483,9 @@ export default function RAGQAApp() {
           <div style={styles.card}>
             <h2 style={styles.sectionTitle}>💬 Ask Questions</h2>
 
-            {!document.uploaded ? (
+            {!canRead ? (
+              <div style={styles.infoBox}>Your key does not have permission to ask questions.</div>
+            ) : !document.uploaded && canIngest ? (
               <div style={styles.infoBox}>
                 ⚠️ Please upload a document first
               </div>
@@ -567,10 +605,23 @@ export default function RAGQAApp() {
         {/* User Info Card */}
         <div style={styles.sidebarCard}>
           <h3 style={styles.sidebarTitle}>👤 User</h3>
-          <p style={styles.sidebarText}><strong>Name:</strong> {user.name}</p>
+          <p style={styles.sidebarText}><strong>User:</strong> {user.user_id}</p>
           <p style={{ ...styles.sidebarText, fontSize: "0.85rem", color: "#666", marginBottom: "12px" }}>
-            <strong>Email:</strong> {user.email}
+            <strong>Roles:</strong> {user.roles.join(", ")}
           </p>
+          <label htmlFor="project-scope" style={styles.sidebarText}>Tenant / project</label>
+          <select
+            id="project-scope"
+            style={{ ...styles.questionInput, marginBottom: "12px" }}
+            value={user.scopes.findIndex((grant) =>
+              grant.tenant_id === scope?.tenant_id && grant.collection_id === scope?.collection_id)}
+            onChange={(e) => selectScope(user.scopes[Number(e.target.value)])}
+            disabled={user.scopes.length < 2}
+          >
+            {user.scopes.map((grant, index) => (
+              <option key={index} value={index}>{grant.tenant_id} / {grant.collection_id}</option>
+            ))}
+          </select>
           <button
             onClick={handleLogout}
             style={{

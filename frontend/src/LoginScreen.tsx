@@ -4,11 +4,11 @@
  */
 
 import React, { useState } from "react";
-import { styles } from "./styles";
 import { COLORS, SPACING, TYPOGRAPHY } from "./constants";
 
 interface LoginProps {
-  onLogin: (email: string) => void;
+  onLogin: (apiKey: string) => Promise<void>;
+  authError?: string | null;
 }
 
 const loginStyles = {
@@ -108,12 +108,10 @@ const loginStyles = {
   },
 };
 
-export default function LoginScreen({ onLogin }: LoginProps) {
-  const [email, setEmail] = useState("");
+export default function LoginScreen({ onLogin, authError }: LoginProps) {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(false);
-  const [emailFocus, setEmailFocus] = useState(false);
   const [passwordFocus, setPasswordFocus] = useState(false);
   const [buttonHover, setButtonHover] = useState(false);
 
@@ -122,40 +120,21 @@ export default function LoginScreen({ onLogin }: LoginProps) {
     setError("");
     setIsLoading(true);
 
-    // Validate inputs
-    if (!email || !password) {
-      setError("Please enter both email and password");
+    if (!password.trim()) {
+      setError("Please enter your individual API key.");
       setIsLoading(false);
       return;
     }
 
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(email)) {
-      setError("Please enter a valid email address");
+    const key = password.trim();
+    setPassword("");
+    try {
+      await onLogin(key);
+    } catch {
+      setError("Unable to sign in. Check your API key and server connection.");
+    } finally {
       setIsLoading(false);
-      return;
     }
-
-    if (password.length < 4) {
-      setError("Password must be at least 4 characters");
-      setIsLoading(false);
-      return;
-    }
-
-    // Simulate login delay
-    await new Promise((resolve) => setTimeout(resolve, 500));
-
-    // Call onLogin with email
-    onLogin(email);
-    setIsLoading(false);
-  };
-
-  const handleDemoLogin = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setIsLoading(true);
-    await new Promise((resolve) => setTimeout(resolve, 300));
-    onLogin("demo@example.com");
-    setIsLoading(false);
   };
 
   return (
@@ -170,35 +149,17 @@ export default function LoginScreen({ onLogin }: LoginProps) {
         </div>
 
         <form style={loginStyles.form} onSubmit={handleSubmit}>
-          {error && <div style={loginStyles.error}>❌ {error}</div>}
-
-          <div style={loginStyles.formGroup}>
-            <label htmlFor="email" style={loginStyles.label}>
-              📧 Email
-            </label>
-            <input
-              id="email"
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="you@example.com"
-              style={{
-                ...loginStyles.input,
-                ...(emailFocus ? loginStyles.inputFocus : {}),
-              }}
-              onFocus={() => setEmailFocus(true)}
-              onBlur={() => setEmailFocus(false)}
-              disabled={isLoading}
-            />
-          </div>
+          {(error || authError) && <div role="alert" style={loginStyles.error}>❌ {error || authError}</div>}
 
           <div style={loginStyles.formGroup}>
             <label htmlFor="password" style={loginStyles.label}>
-              🔒 Password
+              🔒 Individual API key
             </label>
             <input
               id="password"
               type="password"
+              autoComplete="off"
+              spellCheck={false}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               placeholder="••••••••"
@@ -228,21 +189,8 @@ export default function LoginScreen({ onLogin }: LoginProps) {
           </button>
 
           <div style={loginStyles.demoHint}>
-            <strong>💡 Demo Mode:</strong> Use any email and password (min 4 chars)
-            <br />
-            <button
-              type="button"
-              onClick={handleDemoLogin}
-              disabled={isLoading}
-              style={{
-                ...loginStyles.button,
-                background: COLORS.INFO_TEXT,
-                marginTop: SPACING.MARGIN_SMALL,
-                fontSize: TYPOGRAPHY.FONT_SIZE_SMALL,
-              }}
-            >
-              Try Demo Login
-            </button>
+            Use the key issued by your administrator. It stays in memory only;
+            refreshing this page signs you out.
           </div>
         </form>
       </div>
