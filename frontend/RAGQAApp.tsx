@@ -14,9 +14,10 @@
 
 import React, { useState, useEffect, useRef } from "react";
 import { styles } from "./src/styles";
-import { ChatMessage, DocumentState, ProcessStatus } from "./src/types";
+import { ChatMessage, DocumentState, ImageProcessingMode, ProcessStatus } from "./src/types";
 import { formatTimestamp, deriveDocumentId, deriveDocumentIdFromUrl } from "./src/utils";
 import LoginScreen from "./src/LoginScreen";
+import RetainedAnswers from "./src/RetainedAnswers";
 import {
   loginUser, logoutUser, getCurrentUser, getCurrentScope, getSessionGeneration,
   isCurrentSession, selectScope, subscribeSession, User, Scope,
@@ -92,7 +93,10 @@ export default function RAGQAApp() {
   });
 
   const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
+  const [retainAnswer, setRetainAnswer] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [imageMode, setImageMode] = useState<ImageProcessingMode>("ocr");
+  const [imageDescriptionEnabled, setImageDescriptionEnabled] = useState(false);
   const [sharepointUrl, setSharePointUrl] = useState("");
   const [question, setQuestion] = useState("");
   const [processStatus, setProcessStatus] = useState<ProcessStatus | null>(null);
@@ -115,7 +119,9 @@ export default function RAGQAApp() {
     clearTimeout(balloonTimerRef.current);
     setDocument({ uploaded: false, name: "", sizeKb: 0, id: "" });
     setChatHistory([]);
+    setRetainAnswer(false);
     setSelectedFile(null);
+    setImageMode("ocr");
     setSharePointUrl("");
     setQuestion("");
     setProcessStatus(null);
@@ -152,8 +158,19 @@ export default function RAGQAApp() {
     };
 
     checkApiHealth();
+    const capabilitiesController = new AbortController();
+    apiService.ingestionCapabilities(capabilitiesController.signal).then((capabilities) => {
+      if (active && isCurrentSession(version)) {
+        setImageDescriptionEnabled(capabilities.image_description_enabled);
+      }
+    }).catch(() => {
+      if (active && isCurrentSession(version)) {
+        setImageDescriptionEnabled(false);
+        setProcessStatus({ type: "error", message: "Unable to check image-processing capabilities. Reload after the API is available." });
+      }
+    });
     const interval = setInterval(checkApiHealth, 5000);
-    return () => { active = false; clearInterval(interval); };
+    return () => { active = false; capabilitiesController.abort(); clearInterval(interval); };
   }, [user, scope]);
 
   // Auto-scroll to bottom of chat
@@ -184,6 +201,7 @@ export default function RAGQAApp() {
   const canIngest = user.roles.includes("ingest");
   const canRead = user.roles.includes("read");
   const isAdmin = user.roles.includes("admin");
+  const selectedImage = selectedFile !== null && /\.(png|jpe?g|bmp|tiff?|webp|gif)$/i.test(selectedFile.name);
 
   // Handle File Selection
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -216,8 +234,9 @@ export default function RAGQAApp() {
 
     try {
       const documentId = deriveDocumentId(selectedFile.name);
-      await apiService.uploadDocument(
-        selectedFile, documentId, scope.tenant_id, scope.collection_id, signal
+      const result = await apiService.uploadDocument(
+        selectedFile, documentId, scope.tenant_id, scope.collection_id, signal, {},
+        selectedImage ? imageMode : "ocr"
       );
       if (!isCurrentSession(version) || signal.aborted) return;
       setDocument({
@@ -225,9 +244,15 @@ export default function RAGQAApp() {
         name: selectedFile.name,
         sizeKb: selectedFile.size / 1024,
         id: documentId,
+        imageDescription: result.image_description,
       });
       setChatHistory([]);
-      setProcessStatus({ type: "success", message: "Document processed successfully!" });
+      setProcessStatus({
+        type: "success",
+        message: result.content_kind === "ai_image_description"
+          ? "AI visual description created and indexed. Review the unverified interpretation below."
+          : "Document processed successfully!",
+      });
       setShowBalloons(true);
       balloonTimerRef.current = setTimeout(() => setShowBalloons(false), 4000);
     } catch (error) {
@@ -304,7 +329,8 @@ export default function RAGQAApp() {
 
     try {
       const data = await apiService.askQuestion(
-        trimmedQuestion, document.id || "default", scope.tenant_id, scope.collection_id, signal
+        trimmedQuestion, document.id || "default", scope.tenant_id, scope.collection_id,
+        signal, {}, retainAnswer
       );
       if (!isCurrentSession(version) || signal.aborted) return;
       const answer = data.answer || "";
@@ -314,6 +340,7 @@ export default function RAGQAApp() {
           question: trimmedQuestion,
           answer,
           timestamp: formatTimestamp(),
+          savedUntil: data.answer_expires_at ?? undefined,
         },
       ]);
       setQuestion("");
@@ -379,6 +406,27 @@ export default function RAGQAApp() {
                 <div style={styles.infoBox}>
                   <strong>File size:</strong> {(selectedFile.size / 1024).toFixed(2)} KB
                 </div>
+                {selectedImage && (
+                  <div style={styles.infoBox}>
+                    <label htmlFor="image-processing-mode">Image processing: </label>
+                    <select id="image-processing-mode" value={imageMode} disabled={isProcessing}
+                      onChange={(event) => {
+                        setImageMode(event.target.value === "describe" ? "describe" : "ocr");
+                        setDocument({ uploaded: false, name: "", sizeKb: 0, id: "" });
+                        setChatHistory([]);
+                        setProcessStatus(null);
+                      }}>
+                      <option value="ocr">Read text with local OCR</option>
+                      <option value="describe" disabled={!imageDescriptionEnabled}>AI visual description (OpenAI)</option>
+                    </select>
+                    {imageMode === "describe" ? <p>
+                      Clicking Process Document sends this image to OpenAI for an AI-generated description.
+                      Only upload images approved for external processing. Results may be wrong and do not
+                      verify measurements, drawing intent or engineering conclusions.
+                    </p> : <p>OCR reads text only and requires a separately installed Tesseract engine.</p>}
+                    {!imageDescriptionEnabled && <p>AI visual description is not enabled on the server.</p>}
+                  </div>
+                )}
 
                 <button
                   onClick={handleProcessDocument}
@@ -475,6 +523,13 @@ export default function RAGQAApp() {
                 ✓ Document is ready for questions!
               </div>
             )}
+            {document.imageDescription && (
+              <div style={styles.infoBox}>
+                <strong>AI-generated image description - unverified</strong>
+                <p>Visual interpretation only, not verified OCR, CAD/BIM understanding or engineering advice.</p>
+                <p style={{ whiteSpace: "pre-wrap" }}>{document.imageDescription}</p>
+              </div>
+            )}
           </div>
         </div>
 
@@ -537,6 +592,11 @@ export default function RAGQAApp() {
         </div>
       </div>
 
+      {canRead && scope && (
+        <RetainedAnswers key={`${user.user_id}:${scope.tenant_id}:${scope.collection_id}`}
+          retain={retainAnswer} onRetain={setRetainAnswer} />
+      )}
+
       {/* Chat History */}
       {chatHistory.length > 0 && (
         <div style={styles.historySection}>
@@ -552,6 +612,8 @@ export default function RAGQAApp() {
                   <p>{chat.answer}</p>
                 </div>
                 <div style={styles.timestamp}>⏰ {chat.timestamp}</div>
+                {chat.savedUntil && <p>Saved privately until {new Date(chat.savedUntil * 1000).toLocaleString()}.
+                  Access or index changes may redact it earlier.</p>}
               </div>
             ))}
             <div ref={chatEndRef} />

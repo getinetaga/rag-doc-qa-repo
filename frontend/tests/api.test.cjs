@@ -9,7 +9,7 @@ const ts = require("typescript");
 function harness(fetch, globals = {}) {
   const cache = new Map();
   const context = vm.createContext({
-    fetch, Headers, Response, FormData, AbortController, setTimeout, clearTimeout,
+    fetch, Headers, Response, FormData, AbortController, URLSearchParams, setTimeout, clearTimeout,
     ...globals,
   });
   function load(name) {
@@ -34,6 +34,23 @@ const session = (roles = ["read", "ingest", "admin"]) => ({
 });
 const json = (data, status = 200) => new Response(JSON.stringify(data), { status });
 const file = () => Object.assign(new Blob(["document"]), { name: "document.txt" });
+
+test("retention is opt-in and saved answers use authenticated current-scope requests", async () => {
+  const calls = [];
+  const { auth, api } = harness(async (url, init) => {
+    calls.push({ url, init });
+    return json(url.endsWith("/session") ? session() : { answer: "answer", answer_id: "saved" });
+  });
+  await auth.loginUser("individual-key", "http://api");
+  await api.askQuestion("Save?", "source", undefined, undefined, undefined, {}, true);
+  assert.equal(JSON.parse(calls.at(-1).init.body).retain_answer, true);
+  await api.listSavedAnswers();
+  assert.match(calls.at(-1).url, /answers\?tenant_id=tenant-a&collection_id=project-a$/);
+  await api.readSavedAnswer("saved/id");
+  assert.match(calls.at(-1).url, /answers\/saved%2Fid$/);
+  await api.deleteSavedAnswer("saved");
+  assert.equal(calls.at(-1).init.method, "DELETE");
+});
 
 test("capacity errors give a safe retry message without exposing server details", async () => {
   const { auth, api } = harness(async (url) => {
@@ -155,6 +172,33 @@ test("failed jobs produce a clear error without exposing server details", async 
   await assert.rejects(api.uploadDocument(file(), "document"), (error) =>
     /processing failed/i.test(error.message) && !error.message.includes("operator-only"));
 });
+
+test("visual processing is explicit and preserves the generated description", async () => {
+  const { auth, api } = harness(async (url, init) => {
+    if (url.endsWith("/session")) return json(session());
+    assert.equal(init.body.get("image_mode"), "describe");
+    return json({ content_kind: "ai_image_description", image_description: "A red rectangle.", chunks: 1 });
+  });
+  await auth.loginUser("ingest-key", "http://api");
+  const result = await api.uploadDocument(file(), "image", undefined, undefined, undefined, {}, "describe");
+  assert.equal(result.image_description, "A red rectangle.");
+});
+
+for (const queued of [false, true]) {
+  test(`safe image error codes are explained without reflecting bodies (queued=${queued})`, async () => {
+    const { auth, api } = harness(async (url) => {
+      if (url.endsWith("/session")) return json(session());
+      if (queued && url.endsWith("/upload")) return json({ job_id: "ocr-job", status: "queued" });
+      return json({
+        status: "failed", error_code: "ocr_unavailable",
+        error: "private-error-details", detail: "private-error-details",
+      }, queued ? 200 : 503);
+    });
+    await auth.loginUser("ingest-key", "http://api");
+    await assert.rejects(api.uploadDocument(file(), "image"), (error) =>
+      /choose AI visual description/i.test(error.message) && !error.message.includes("private-error-details"));
+  });
+}
 
 test("401 clears the current session and notifies the UI", async () => {
   const { auth, api } = harness(async (url) =>

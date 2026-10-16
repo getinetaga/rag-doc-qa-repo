@@ -24,6 +24,7 @@ class QuestionRequest(BaseModel):
     """
 
     question: str = Field(min_length=1, max_length=8000)
+    retain_answer: bool = False
     tenant_id: str = "default"
     collection_id: str = "default"
     document_id: str = "default"
@@ -44,6 +45,8 @@ class AnswerResponse(BaseModel):
 
     answer: str
     question_domain: str | None = None
+    answer_id: str | None = None
+    answer_expires_at: float | None = None
 
 
 class FeedbackRequest(BaseModel):

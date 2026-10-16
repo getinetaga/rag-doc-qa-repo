@@ -84,6 +84,14 @@ HUGGINGFACE_LLM_MODEL = os.getenv(
 	"HUGGINGFACE_LLM_MODEL", os.getenv("LLM_MODEL", "google/flan-t5-base")
 )
 
+_image_description_enabled = os.getenv("IMAGE_DESCRIPTION_ENABLED", "false").strip().lower()
+if _image_description_enabled not in {"true", "false"}:
+	raise ValueError("IMAGE_DESCRIPTION_ENABLED must be true or false.")
+IMAGE_DESCRIPTION_ENABLED = _image_description_enabled == "true"
+OPENAI_VISION_MODEL = os.getenv("OPENAI_VISION_MODEL", "gpt-4o-mini").strip()
+if not OPENAI_VISION_MODEL:
+	raise ValueError("OPENAI_VISION_MODEL must not be empty.")
+
 if LLM_PROVIDER == "huggingface":
 	LLM_MODEL = HUGGINGFACE_LLM_MODEL
 else:
@@ -115,6 +123,12 @@ if MAX_CONCURRENT_ANSWERS <= 0 or LLM_REQUEST_TIMEOUT_SECONDS <= 0:
 	raise ValueError("Answer concurrency and provider timeout must be positive.")
 RETRIEVAL_SERVICE_URL = os.getenv("RETRIEVAL_SERVICE_URL", "").rstrip("/")
 INFERENCE_SERVICE_URL = os.getenv("INFERENCE_SERVICE_URL", "").rstrip("/")
+
+# Opt-in private storage; never place retained confidential answers in the repo.
+ANSWER_RETENTION_DB = os.getenv("ANSWER_RETENTION_DB", "")
+ANSWER_RETENTION_DAYS = int(os.getenv("ANSWER_RETENTION_DAYS", "30"))
+if not 1 <= ANSWER_RETENTION_DAYS <= 30:
+	raise ValueError("Answer retention must be between 1 and 30 days.")
 
 # Large uploads are pushed into an asynchronous background job when they
 # exceed this size (in bytes). Set to 0 to process all uploads asynchronously.

@@ -5,6 +5,8 @@ Generation (RAG) pipeline for asking natural-language questions about
 content from many sources:
 
 - **Direct uploads** — PDF, DOCX, TXT, and image OCR.
+- **Opt-in AI image descriptions** — OpenAI visual interpretations, clearly
+  marked unverified; separate from local OCR and disabled by default.
 - **Google Docs** — fetched by shared URL.
 - **SharePoint / OneDrive-for-Business** — fetched through Microsoft Graph.
 - **SQL databases** — rows from a read-only `SELECT` (PostgreSQL or SQLite),
@@ -30,6 +32,21 @@ There is no anonymous fallback. See [Security and reliability operations](docs/S
 for key provisioning, roles, approved database sources, client sign-in, deployment
 restrictions, and verification. Existing design reports describe historical
 behavior; this operational guide describes the hardening changes.
+
+Optional **private saved answers** are separate from caches/audit: explicit
+opt-in, owner-only reads with current permissions, up to 30-day retention, and
+whole-answer redaction on observed policy/index changes. Configure private
+`ANSWER_RETENTION_DB` storage outside the repository; currently local FAISS only.
+See the operational guide's **Private answer retention** section.
+
+For photographs/diagrams, an operator can enable `IMAGE_DESCRIPTION_ENABLED=true`
+and select `OPENAI_VISION_MODEL=gpt-4o-mini` with the existing `OPENAI_API_KEY`.
+After choosing an image in the React app, select **AI visual description
+(OpenAI)** before processing. This explicitly sends the selected image to OpenAI;
+only use approved images. Tesseract is not required for that mode.
+The description is shown immediately and indexed as unverified AI-derived text.
+This does not add reliable engineering drawing/CAD/BIM understanding.
+See **Image processing modes** in the operational guide for limits and privacy.
 
 Uploads use private staging and scoped replacement. Jobs/feedback are access
 controlled, and unsafe scope-dropping retrieval retries have been removed.

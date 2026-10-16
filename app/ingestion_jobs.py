@@ -15,6 +15,7 @@ import time
 import uuid
 from collections.abc import Callable
 from fastapi import HTTPException
+from .ingestion_errors import IngestionError
 
 logger = logging.getLogger(__name__)
 _job_queue: "queue.Queue[tuple[str, Callable, tuple, dict]]" = queue.Queue(maxsize=128)
@@ -56,6 +57,7 @@ def _worker_loop() -> None:
                 status="failed",
                 finished_at=time.time(),
                 error="Document processing failed. Contact the operator with this job ID.",
+                error_code=exc.code if isinstance(exc, IngestionError) else None,
             )
         finally:
             _job_queue.task_done()

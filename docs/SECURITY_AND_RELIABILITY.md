@@ -183,9 +183,138 @@ with multiple workers; environment settings cannot detect every external
 process-manager configuration. Jobs/history are not durable across restarts.
 No claim of multi-worker job durability or complete production hardening is made.
 
+## Image processing modes
+
+Direct image uploads have two distinct paths. The existing/default `image_mode=ocr`
+reads text locally using Pillow, pytesseract and the separately installed
+Tesseract executable. It does not describe visual scenes. Missing OCR components
+now return the safe `ocr_unavailable` error code, including queued jobs.
+The Python wrapper alone is not the OCR engine. No Tesseract installation is
+required or performed for the visual-description path.
+
+**Opt-in visual description** uses `image_mode=describe` in multipart `/upload`.
+An operator must first approve external processing and set:
+
+```powershell
+$env:IMAGE_DESCRIPTION_ENABLED = 'true'
+$env:OPENAI_VISION_MODEL = 'gpt-4o-mini'
+```
+
+Use the existing private `OPENAI_API_KEY`; never put it in the browser or a
+committed config file. Restart the API to load these settings.
+The enable flag accepts only `true`/`false` (default `false`); the model must be
+nonempty and support image input on the Responses API. This is a separate
+OpenAI-only capability, not the question-answering `LLM_PROVIDER=auto` race.
+It does not change the configured text-answer provider or install OCR.
+`GET /ingestion-capabilities` requires authentication and reports availability.
+
+In React, choose an image, explicitly select **AI visual description (OpenAI)**,
+read the external-processing notice and click **Process Document**. Other files
+and remote Google/SharePoint ingestion keep their existing extraction paths.
+An API client must likewise explicitly select describe mode; a failed OCR
+request is never silently forwarded to a vision provider.
+
+The backend validates the image, applies EXIF orientation, flattens transparency
+on white, strips image metadata on JPEG re-encoding and resizes within 2048x2048.
+Only single-frame supported images are admitted; animations and multi-page TIFFs
+are explicitly rejected rather than silently examining one page/frame.
+Limits are 20 MiB original bytes and 25 million decoded pixels. Provider output
+is capped at 1,200 tokens and 12,000 accepted characters; incomplete, refused or
+empty output is not indexed. Reducing resolution can lose small details.
+
+The normalized image is sent to OpenAI, so sensitive content remains sensitive
+even after metadata removal. Review classification, provider terms, residency,
+retention and cost before enabling. `store=False` requests no Responses API
+application-state storage; it is **not** a guarantee of zero provider logging,
+zero retention, local-only processing, or permission to send restricted content.
+The app never logs raw image payloads/provider errors.
+
+Vision calls share the existing process-wide answer slots, network timeout and
+zero automatic SDK retries. Current ingest permission is checked at job start,
+immediately before image dispatch, and before index publication. Revocation
+cannot recall images already transmitted. Failed descriptions do not replace
+the previous source/index. Temporary uploads are cleaned on success/failure.
+Queued descriptions retain the same owner/project-scoped job access as uploads.
+
+The result is displayed and indexed as **AI-generated, unverified visual
+interpretation**, with a warning embedded into every indexed chunk and
+`content_kind=ai_image_description`/model metadata. Citations refer to that
+derived description, not proof about the original image. It may omit, misread or
+invent details; do not treat it as certified OCR, measurements, CAD/BIM parsing,
+table understanding, engineering advice or approval. Human review is required.
+The raw upload is deleted after processing; derived descriptions remain in the
+project index until replacement/removal, and owner-scoped job history follows
+the existing bounded process-local lifecycle. This is separate from saved-answer
+retention, and descriptions may still be processed by the configured text-answer
+provider when users later ask questions about them.
+
+## Private answer retention
+
+Answer retention is separate from response caches, feedback and audit logs.
+It is **off unless private storage is configured**, and each `/ask` request must
+explicitly set `retain_answer: true`. The React UI provides an unchecked saving
+option, metadata-only history, protected open, and owner deletion. Unsaved chat
+remains browser memory only; no saved-answer bodies are put in browser storage.
+Clearing the visible chat is not deletion of saved answers.
+
+For the single-process, local FAISS deployment, provision a private directory
+outside the repository/build context, accessible only to the operator/service
+account. Use restrictive Windows directory ACLs (or POSIX permissions), encrypted
+storage where required, and exclude it from ordinary logs/backups:
+
+```powershell
+$env:ANSWER_RETENTION_DB = 'C:\RAG-Private\answers.sqlite3'
+$env:ANSWER_RETENTION_DAYS = '30'
+```
+
+Create and secure the parent directory before starting the API. Relative paths,
+repository paths and unavailable storage fail closed. No directory/ACL provisioning
+or encryption-key management is performed automatically. The SQLite file contains
+confidential plaintext at rest unless the storage layer encrypts it.
+Restart the API after changing configuration. Allowed retention is 1-30 days;
+the default and maximum are 30 days. Lowering the setting also shortens existing
+records' lifetimes; increasing it cannot extend their original expiry.
+
+| Rule | Implemented behavior |
+|---|---|
+| Ownership | Random answer ID; only its creator can read or delete it. Admin is not a bypass. Never reuse a removed user ID. |
+| Current access | Every read rechecks the current user and project grant. Missing/invalid policy fails closed. |
+| Source validity | Saved content is tied to the local index namespace/revision and the complete validated access-policy fingerprint. Any observed policy change or index change invalidates all affected saved content conservatively, including unrelated projects. |
+| Redaction | Null the entire question and answer; retain only restricted ID/owner/project/time/status and fingerprint metadata until expiry. Redaction is irreversible; restoring grants does not restore scrubbed text. No unreliable partial masking. |
+| Expiry | Reject and delete at the exact expiry boundary on storage operations. A background sweep runs at startup and every 60 seconds while the API runs; no sweep can execute while the service is stopped. |
+| Erasure | Authenticated owners may delete their own answers even after project access is revoked. Expiry deletes the whole record. |
+| Resource bounds | At most 1,000 retained records across users, at most 100,000 answer characters per saved record; full storage returns 409, never silently evicts someone else's data. |
+| HTTP caching | `/ask` and saved-answer endpoints send `Cache-Control: no-store`. |
+
+API: `GET /answers-policy` reports enabled status/days; `GET /answers` accepts
+tenant/collection selectors and returns owner-only metadata, not question/title/
+answer excerpts. `GET /answers/{id}` returns protected content or 404/403/410;
+`DELETE /answers/{id}` erases the owner's record. `/ask` adds optional
+`answer_id`/`answer_expires_at` response fields. A failed requested save is an
+explicit error, not an answer falsely labelled saved. An index/policy change
+during generation rejects saving with 409.
+
+**Current limitations:** retention is deliberately unavailable for pgvector,
+mirrored or remote retrieval; process-local revisions cannot attest to external
+writes. Restarting/replacing the in-memory index redacts old saved answers.
+There is no live ConPro/SharePoint document-ACL callback. Operators must publish
+source withdrawal through the local index and publish grant revocation through
+the access policy. A change reverted before any check observes it cannot be
+detected without a durable revocation generation/event ledger. Such durable
+per-source/version checks are a prerequisite for ConPro saved-answer history;
+the standalone feature is not that connector.
+
+SQLite secure deletion is enabled for active-file payload scrubbing; this is not
+certified erasure of SSD blocks, filesystem snapshots, backups, or provider copies.
+Apply separately approved backup/provider retention and deletion procedures.
+Already delivered answers, visible chat, downloads, screenshots, user copies,
+legacy feedback submissions and provider-side processing cannot be recalled by
+redacting this store. Do not use feedback or generic audit fields as an alternate
+answer archive.
+
 ## Bounded concurrent questions
 
-The RAG pipeline and HTTP response shape are unchanged. The API no longer holds
+The RAG pipeline is unchanged; retention adds optional response fields. The API no longer holds
 its global index lock while waiting for an AI provider. Local vector retrieval
 and cache-generation selection share the vector store's short read lock; the
 retrieved context is then used outside that lock. Embedding also runs outside

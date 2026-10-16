@@ -13,18 +13,21 @@ package: `ingestion`, `chunking`, `embeddings`, `vector_store`, and `rag`.
 
 import logging
 import hashlib
+import json
 import os
 import re
 import tempfile
 import threading
 import time
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
+from typing import Literal
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
-from . import config
+from . import answer_store, config
 from .auth import (
     ApiUser, authenticate_before_body, authorize_current_user, authorize_scope, approved_database_source, database_connection,
     get_current_user, load_policy, require_role,
@@ -32,7 +35,9 @@ from .auth import (
 from .chunking import chunk_text
 from .db_ingestion import extract_database_text
 from .embeddings import embed_text, get_model
-from .ingestion import _SUPPORTED_SUFFIXES, _extract_google_doc_id, extract_google_doc_text, extract_sharepoint_text, extract_text
+from .ingestion import _IMAGE_SUFFIXES, _SUPPORTED_SUFFIXES, _extract_google_doc_id, extract_google_doc_text, extract_sharepoint_text, extract_text
+from .image_description import DESCRIPTION_WARNING, MAX_IMAGE_BYTES, describe_image, ensure_description_enabled
+from .ingestion_errors import IngestionError
 from .ingestion_jobs import enqueue_job, ensure_worker_started, get_job
 from .rag import generate_answer
 from .rag import classify_question_domain, get_question_domain_catalog
@@ -90,7 +95,21 @@ async def lifespan(app: FastAPI):
         except Exception as exc:
             logger.error("Vector store startup initialization failed (%s).", type(exc).__name__)
             raise
-    yield
+    retention_stop = threading.Event()
+    retention_worker = None
+    if config.ANSWER_RETENTION_DB:
+        _maintain_answers()
+        retention_worker = threading.Thread(
+            target=_answer_maintenance_loop, args=(retention_stop,), daemon=True,
+            name="answer-retention",
+        )
+        retention_worker.start()
+    try:
+        yield
+    finally:
+        retention_stop.set()
+        if retention_worker is not None:
+            retention_worker.join(timeout=10)
     # --- shutdown ---
     logger.info("RAG Document QA API shutting down.")
     if vector_store is not None:
@@ -104,6 +123,31 @@ app = FastAPI(
     dependencies=[Depends(get_current_user)],
 )
 app.middleware("http")(authenticate_before_body)
+
+
+@app.exception_handler(IngestionError)
+async def safe_ingestion_error(request, exc: IngestionError):
+    logger.warning("Ingestion rejected (%s).", exc.code)
+    return JSONResponse(
+        {"detail": exc.public_message, "error_code": exc.code}, status_code=exc.status_code,
+    )
+
+
+@app.get("/ingestion-capabilities")
+def ingestion_capabilities():
+    return {
+        "image_description_enabled": bool(config.IMAGE_DESCRIPTION_ENABLED and config.OPENAI_API_KEY),
+        "image_description_provider": "OpenAI",
+    }
+
+
+@app.middleware("http")
+async def prevent_answer_caching(request, call_next):
+    response = await call_next(request)
+    if request.url.path in {"/ask", "/upload", "/answers", "/answers-policy"} or request.url.path.startswith(("/answers/", "/ingestion-jobs/")):
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Pragma"] = "no-cache"
+    return response
 
 # Enable CORS for TypeScript frontend and local development
 app.add_middleware(
@@ -129,6 +173,87 @@ app.add_middleware(
 vector_store = None
 vector_store_lock = threading.RLock()
 _answer_slots = threading.BoundedSemaphore(config.MAX_CONCURRENT_ANSWERS)
+
+
+@contextmanager
+def _retention_snapshot():
+    with vector_store_lock:
+        store = vector_store
+        if (
+            not isinstance(store, VectorStore) or store.backend != "faiss"
+            or config.RETRIEVAL_SERVICE_URL
+        ):
+            yield None
+            return
+        with store.read_snapshot():
+            identity = {
+                "policy": load_policy().model_dump(mode="json"),
+                "index": store.cache_namespace,
+                "revision": store.revision,
+            }
+            yield hashlib.sha256(
+                json.dumps(identity, sort_keys=True).encode("utf-8")
+            ).hexdigest()
+
+
+def _maintain_answers():
+    try:
+        with _retention_snapshot() as stamp:
+            answer_store.maintain(stamp)
+    except HTTPException:
+        # Policy outages must not extend the lifetime of sensitive stored payloads.
+        answer_store.maintain(None)
+        raise
+
+
+def _answer_maintenance_loop(stop: threading.Event):
+    while not stop.wait(60):
+        try:
+            _maintain_answers()
+        except HTTPException:
+            logger.error("Answer retention maintenance failed; operator action required.")
+
+
+@app.get("/answers-policy")
+def answer_retention_policy():
+    with _retention_snapshot() as stamp:
+        return {
+            "enabled": bool(config.ANSWER_RETENTION_DB and stamp),
+            "retention_days": config.ANSWER_RETENTION_DAYS,
+        }
+
+
+@app.get("/answers")
+def list_saved_answers(
+    tenant_id: str = "default", collection_id: str = "default",
+    user: ApiUser = Depends(get_current_user),
+):
+    scope = authorize_scope(user, tenant_id, collection_id)
+    with _retention_snapshot() as stamp:
+        answer_store.maintain(stamp)
+        authorize_current_user(user.user_id, scope.tenant_id, scope.collection_id)
+        return answer_store.list_answers(user.user_id, scope.tenant_id, scope.collection_id)
+
+
+@app.get("/answers/{answer_id}")
+def read_saved_answer(answer_id: str, user: ApiUser = Depends(get_current_user)):
+    with _retention_snapshot() as stamp:
+        answer_store.maintain(stamp)
+        record = answer_store.read(answer_id, user.user_id)
+        authorize_current_user(user.user_id, record["tenant_id"], record["collection_id"])
+        if record["status"] != "available":
+            raise HTTPException(410, "Saved answer was redacted because access or sources changed.")
+        return {
+            key: record[key]
+            for key in ("id", "question", "answer", "created_at", "expires_at", "status")
+        }
+
+
+@app.delete("/answers/{answer_id}")
+def delete_saved_answer(answer_id: str, user: ApiUser = Depends(get_current_user)):
+    # Owners may erase their own retained data even after project access is removed.
+    answer_store.delete(answer_id, user.user_id)
+    return {"status": "deleted"}
 
 
 def _resolve_document_id(document_id: str, original_name: str) -> str:
@@ -168,14 +293,30 @@ def _process_upload_job(
     tag: str | None = None,
     source_system: str | None = None,
     owner_id: str | None = None,
+    image_mode: Literal["ocr", "describe"] = "ocr",
 ):
     """Process an uploaded file and update the scoped vector index."""
 
     try:
         if owner_id is not None:
             authorize_current_user(owner_id, tenant_id, collection_id, role="ingest")
-        text = extract_text(file_path)
-        return _index_text_content(
+        if image_mode == "describe":
+            if owner_id is None:
+                raise HTTPException(403, "Image description requires an authenticated owner.")
+            if not _answer_slots.acquire(blocking=False):
+                raise IngestionError("image_description_busy")
+            try:
+                text = describe_image(
+                    file_path,
+                    before_dispatch=lambda: authorize_current_user(
+                        owner_id, tenant_id, collection_id, role="ingest",
+                    ),
+                )
+            finally:
+                _answer_slots.release()
+        else:
+            text = extract_text(file_path)
+        result = _index_text_content(
             text=text,
             tenant_id=tenant_id,
             collection_id=collection_id,
@@ -186,7 +327,11 @@ def _process_upload_job(
             tag=tag,
             source_system=source_system,
             owner_id=owner_id,
+            content_kind="ai_image_description" if image_mode == "describe" else None,
         )
+        if image_mode == "describe":
+            result.update(image_description=text, content_kind="ai_image_description")
+        return result
     finally:
         if os.path.exists(file_path):
             os.remove(file_path)
@@ -203,6 +348,7 @@ def _index_text_content(
     tag: str | None = None,
     source_system: str | None = None,
     owner_id: str | None = None,
+    content_kind: str | None = None,
 ):
     """Chunk, embed, and index text content in the scoped vector store."""
 
@@ -211,6 +357,8 @@ def _index_text_content(
     chunks = chunk_text(text)
     if not chunks:
         raise ValueError("No extractable text content was found.")
+    if content_kind == "ai_image_description":
+        chunks = [f"{DESCRIPTION_WARNING}\n\n{chunk}" for chunk in chunks]
 
     embeddings = embed_text(chunks)
 
@@ -228,6 +376,9 @@ def _index_text_content(
         metadata_base["tag"] = tag
     if source_system:
         metadata_base["source_system"] = source_system
+    if content_kind:
+        metadata_base["content_kind"] = content_kind
+        metadata_base["description_model"] = config.OPENAI_VISION_MODEL
     metadata_list = [dict(metadata_base) for _ in chunks]
 
     with vector_store_lock:
@@ -266,6 +417,7 @@ def upload_document(
     author: str | None = Form(None),
     tag: str | None = Form(None),
     source_system: str | None = Form(None),
+    image_mode: Literal["ocr", "describe"] = Form("ocr"),
     user: ApiUser = Depends(get_current_user),
 ):
     """Upload and process a document.
@@ -288,6 +440,10 @@ def upload_document(
     suffix = Path((file.filename or "").replace("\\", "/")).suffix.lower()
     if suffix not in _SUPPORTED_SUFFIXES:
         raise HTTPException(422, "Unsupported file type.")
+    if image_mode == "describe":
+        if suffix not in _IMAGE_SUFFIXES:
+            raise HTTPException(422, "AI visual description is available only for image files.")
+        ensure_description_enabled()
 
     declared_size = int(getattr(file, "size", 0) or 0)
     if declared_size and declared_size > config.MAX_UPLOAD_FILE_SIZE_BYTES:
@@ -298,6 +454,8 @@ def upload_document(
                 f"{config.MAX_UPLOAD_FILE_SIZE_BYTES} bytes."
             ),
         )
+    if image_mode == "describe" and declared_size > MAX_IMAGE_BYTES:
+        raise IngestionError("image_too_large")
 
     staging = tempfile.NamedTemporaryFile(prefix="rag-upload-", suffix=suffix, delete=False)
     file_path = staging.name
@@ -310,6 +468,8 @@ def upload_document(
                 file_size += len(chunk)
                 if file_size > config.MAX_UPLOAD_FILE_SIZE_BYTES:
                     raise HTTPException(413, "File exceeds the upload size limit.")
+                if image_mode == "describe" and file_size > MAX_IMAGE_BYTES:
+                    raise IngestionError("image_too_large")
                 staging.write(chunk)
 
         should_queue = config.ASYNC_INGESTION_MIN_BYTES == 0 or file_size >= config.ASYNC_INGESTION_MIN_BYTES
@@ -329,6 +489,7 @@ def upload_document(
                 job_owner=user.user_id,
                 job_scope=(tenant_id, collection_id),
                 owner_id=user.user_id,
+                image_mode=image_mode,
             )
             remove_temp_file = False
             logger.info(
@@ -355,6 +516,7 @@ def upload_document(
             tag,
             source_system,
             owner_id=user.user_id,
+            image_mode=image_mode,
         )
         slo_metrics.record_request(time.monotonic() - request_started_at, success=True)
         return result
@@ -491,6 +653,14 @@ def ask_question(req: QuestionRequest, user: ApiUser = Depends(get_current_user)
     """
 
     scope = authorize_scope(user, req.tenant_id, req.collection_id)
+    retention_stamp = None
+    if req.retain_answer:
+        if not config.ANSWER_RETENTION_DB:
+            raise HTTPException(503, "Private answer storage is not configured.")
+        with _retention_snapshot() as retention_stamp:
+            if retention_stamp is None:
+                raise HTTPException(409, "Answer retention requires local FAISS retrieval.")
+            answer_store.maintain(retention_stamp)
     with vector_store_lock:
         store = vector_store
     if store is None:
@@ -519,10 +689,20 @@ def ask_question(req: QuestionRequest, user: ApiUser = Depends(get_current_user)
             source_system=req.source_system,
         )
         authorize_current_user(user.user_id, scope.tenant_id, scope.collection_id)
+        retained = {}
+        if req.retain_answer:
+            with _retention_snapshot() as current_stamp:
+                if current_stamp is None or current_stamp != retention_stamp:
+                    answer_store.maintain(current_stamp)
+                    raise HTTPException(409, "Access or sources changed. Ask again before saving.")
+                retained = answer_store.save(
+                    user.user_id, scope.tenant_id, scope.collection_id,
+                    req.question, answer, current_stamp,
+                )
     finally:
         _answer_slots.release()
     logger.debug("Answer generated (%d chars).", len(answer))
-    return {"answer": answer, "question_domain": domain}
+    return {"answer": answer, "question_domain": domain, **retained}
 
 
 @app.get("/question-domains", response_model=QuestionDomainCatalogResponse)

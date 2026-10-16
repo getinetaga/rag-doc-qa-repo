@@ -4,6 +4,7 @@ import pytest
 from fastapi import HTTPException
 
 from app import ingestion_jobs
+from app.ingestion_errors import IngestionError
 
 
 def test_full_queue_rejects_without_leaking_job_state(monkeypatch):
@@ -26,8 +27,11 @@ def test_completed_job_history_is_bounded(monkeypatch):
     assert "1009" in ingestion_jobs._job_status
 
 
-def test_background_error_is_sanitized(monkeypatch, caplog):
+@pytest.mark.parametrize("known_error", [False, True])
+def test_background_error_is_sanitized(monkeypatch, caplog, known_error):
     def failing_handler():
+        if known_error:
+            raise IngestionError("image_description_failed")
         raise ValueError("sensitive-source-detail")
 
     class OneJobQueue:
@@ -50,3 +54,4 @@ def test_background_error_is_sanitized(monkeypatch, caplog):
     assert status["status"] == "failed"
     assert "sensitive-source-detail" not in status["error"]
     assert "sensitive-source-detail" not in caplog.text
+    assert status["error_code"] == ("image_description_failed" if known_error else None)
