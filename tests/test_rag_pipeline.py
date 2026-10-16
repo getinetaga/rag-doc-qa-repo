@@ -22,9 +22,89 @@ class DummyVS:
         self._texts = texts
         self.revision = 1
 
-    def search(self, query_embedding, top_k=5):
+    def search(self, query_embedding, top_k=5, source_document=None, filters=None):
         # Return the stored texts up to top_k
         return self._texts[:top_k]
+
+
+@pytest.mark.parametrize("field", [
+    "tenant_id", "collection_id", "document_id", "document_date", "author", "tag", "source_system",
+])
+def test_retrieval_cache_separates_every_filter(field):
+    calls = []
+
+    class FilterStore:
+        revision = 1
+
+        def search(self, vector, limit, *, source_document=None, filters=None):
+            calls.append(dict(filters))
+            return [filters.get(field, "missing")]
+
+    values = {
+        "tenant_id": "a", "collection_id": "p", "document_id": "doc",
+        "document_date": "2026-01-01", "author": "author", "tag": "alpha", "source_system": "source",
+    }
+    store = FilterStore()
+    first = rag._retrieve_context_chunks("Q", [0.1], store, **values)
+    second = rag._retrieve_context_chunks("Q", [0.1], store, **{**values, field: "different"})
+    assert first != second
+    assert len(calls) == 2
+
+
+def test_response_cache_isolates_stores_with_equal_revisions(monkeypatch):
+    monkeypatch.setattr(rag, "embed_text", lambda texts: [[0.1]])
+    monkeypatch.setattr(rag, "_generate_from_prompt", lambda prompt: "Python supports APIs." if "Python supports APIs." in prompt else "Python builds applications.")
+    first = DummyVS(["[A] Python supports APIs."])
+    second = DummyVS(["[B] Python builds applications."])
+    a = rag.generate_answer("What does Python do?", first)
+    b = rag.generate_answer("What does Python do?", second)
+    assert "supports" in a
+    assert "builds" in b
+
+
+def test_scoped_search_never_retries_typeerror_without_filters():
+    class BrokenStore:
+        revision = 1
+        calls = 0
+
+        def search(self, *args, **kwargs):
+            self.calls += 1
+            raise TypeError("Backend implementation failed")
+
+    store = BrokenStore()
+    with pytest.raises(TypeError):
+        rag._retrieve_context_chunks("Q", [0.1], store, "a", "p", "doc")
+    assert store.calls == 1
+
+
+def test_persistent_store_caches_are_disabled_until_shared_generations(monkeypatch):
+    class PersistentStore(DummyVS):
+        backend = "pgvector"
+        calls = 0
+
+        def search(self, *args, **kwargs):
+            self.calls += 1
+            return self._texts
+
+    monkeypatch.setattr(rag, "embed_text", lambda texts: [[0.1]])
+    monkeypatch.setattr(rag, "_generate_from_prompt", lambda prompt: "Python supports APIs.")
+    store = PersistentStore(["[A] Python supports APIs."])
+    for _ in range(2):
+        rag.generate_answer("What does Python do?", store)
+    assert store.calls == 2
+    assert not rag._RETRIEVAL_CACHE
+    assert not rag._RESPONSE_CACHE
+
+
+def test_vector_signature_does_not_round_distinct_vectors():
+    assert rag._vector_signature([0.123401]) != rag._vector_signature([0.123402])
+
+
+def test_remote_retrieval_response_is_validated(monkeypatch):
+    monkeypatch.setattr(config, "RETRIEVAL_SERVICE_URL", "http://internal.invalid")
+    monkeypatch.setattr(rag, "_post_json", lambda *args, **kwargs: {})
+    with pytest.raises(RuntimeError, match="invalid context"):
+        rag._retrieve_context_chunks("Q", [0.1], DummyVS([]), "a", "p", "doc")
 
 
 def test_generate_answer_huggingface(monkeypatch):

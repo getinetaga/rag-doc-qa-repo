@@ -4,8 +4,10 @@
  */
 
 import { useEffect, useRef, useState, useCallback } from "react";
-import { API_URL, HEALTH_CHECK_INTERVAL } from "./constants";
+import { HEALTH_CHECK_INTERVAL } from "./constants";
 import { debugLog } from "./utils";
+import apiService from "./services";
+import { getSessionGeneration, isCurrentSession } from "./auth";
 
 /**
  * Hook for API health checks
@@ -22,10 +24,9 @@ export function useApiHealth(interval: number = HEALTH_CHECK_INTERVAL) {
   useEffect(() => {
     const checkHealth = async () => {
       try {
-        const response = await fetch(`${API_URL}/docs`, {
-          signal: AbortSignal.timeout(2000),
-        });
-        setApiStatus(response.ok ? "online" : "error");
+        const version = getSessionGeneration();
+        const online = await apiService.checkHealth();
+        if (isCurrentSession(version)) setApiStatus(online ? "online" : "offline");
       } catch {
         setApiStatus("offline");
       }

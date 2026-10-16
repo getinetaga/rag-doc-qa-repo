@@ -23,9 +23,16 @@ def add_feedback(entry: dict) -> int:
         return feedback_id
 
 
-def summary() -> dict:
+def summary(*, owner_id: str | None = None, scopes=()) -> dict:
     with _LOCK:
         rows = list(_FEEDBACK)
+    if owner_id is not None:
+        allowed = {(scope.tenant_id, scope.collection_id) for scope in scopes}
+        rows = [
+            row for row in rows
+            if row.get("owner_id") == owner_id
+            and (row.get("tenant_id"), row.get("collection_id")) in allowed
+        ]
 
     total = len(rows)
     thumbs_up = sum(1 for row in rows if row.get("rating") == "up")

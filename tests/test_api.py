@@ -20,15 +20,50 @@ Run the tests with:
 """
 
 import io
+import hashlib
 
 import pytest
 from fastapi.testclient import TestClient
 
-from app import feedback_store, main, slo_metrics
+from app import auth, feedback_store, main, slo_metrics
 
 
 # TestClient wraps the FastAPI app and lets us call endpoints synchronously
-client = TestClient(main.app)
+TEST_KEY = "test-api-key-not-a-real-secret-" + "a" * 32
+client = TestClient(main.app, headers={"Authorization": f"Bearer {TEST_KEY}"})
+
+
+@pytest.fixture(autouse=True)
+def api_access(monkeypatch):
+    policy = auth.AccessPolicy.model_validate({
+        "users": [{
+            "user_id": "api-test-user",
+            "key_sha256": hashlib.sha256(TEST_KEY.encode()).hexdigest(),
+            "roles": ["read", "ingest", "admin"],
+            "scopes": [
+                {"tenant_id": "tenant-a", "collection_id": "project-alpha"},
+                {"tenant_id": "tenant-1", "collection_id": "collection-1"},
+                {"tenant_id": "tenant-1", "collection_id": "hr-policies"},
+                {"tenant_id": "tenant-a", "collection_id": "reference-data"},
+            ],
+            "default_scope": {"tenant_id": "tenant-a", "collection_id": "project-alpha"},
+            "database_sources": ["policies"],
+        }],
+        "database_sources": {
+            "policies": {
+                "tenant_id": "tenant-a", "collection_id": "reference-data",
+                "dsn_env": "RAG_TEST_DATABASE_DSN", "table": "policies",
+            },
+        },
+    })
+    monkeypatch.setattr(auth, "load_policy", lambda: policy)
+    monkeypatch.setenv("RAG_TEST_DATABASE_DSN", "sqlite:///data.db")
+
+
+class AtomicReplaceFake:
+    def replace(self, embeddings, texts, *, source_document, metadata_list, filters):
+        self.clear(source_document=source_document, filters=filters)
+        self.add(embeddings, texts, source_document=source_document, metadata_list=metadata_list)
 
 
 def setup_function():
@@ -78,7 +113,7 @@ def test_upload_and_ask(monkeypatch):
         # Return a small fixed-dimension vector per chunk
         return [[0.0, 0.0, 0.0, 0.0] for _ in chunks]
 
-    class FakeVectorStore:
+    class FakeVectorStore(AtomicReplaceFake):
         def __init__(self, dim):
             self.texts = []
             self.clear_called = False
@@ -136,7 +171,7 @@ def test_upload_large_file_is_queued_async(monkeypatch):
     def fake_embed_text(chunks):
         return [[0.0, 0.0, 0.0, 0.0] for _ in chunks]
 
-    class FakeVectorStore:
+    class FakeVectorStore(AtomicReplaceFake):
         def __init__(self, dim):
             self.texts = []
 
@@ -165,14 +200,16 @@ def test_upload_large_file_is_queued_async(monkeypatch):
     assert payload["job_id"] == "job-123"
 
 
-def test_upload_unsupported_file_type_returns_server_error():
+def test_upload_unsupported_file_type_is_rejected():
     files = {"file": ("data.bin", b"\x00\x01", "application/octet-stream")}
-    with pytest.raises(ValueError, match="Unsupported file type"):
-        client.post("/upload", files=files)
+    assert client.post("/upload", files=files).status_code == 422
 
 
 def test_ingestion_job_status_endpoint(monkeypatch):
-    monkeypatch.setattr(main, "get_job", lambda job_id: {"job_id": job_id, "status": "queued"})
+    monkeypatch.setattr(main, "get_job", lambda job_id: {
+        "job_id": job_id, "status": "queued", "owner_id": "api-test-user",
+        "tenant_id": "tenant-a", "collection_id": "project-alpha",
+    })
 
     resp = client.get("/ingestion-jobs/job-123")
     assert resp.status_code == 200
@@ -305,7 +342,7 @@ def test_upload_google_doc(monkeypatch):
     def fake_embed_text(chunks):
         return [[0.1, 0.2, 0.3, 0.4] for _ in chunks]
 
-    class FakeVectorStore:
+    class FakeVectorStore(AtomicReplaceFake):
         def __init__(self, dim):
             self.texts = []
 
@@ -350,7 +387,7 @@ def test_upload_sharepoint(monkeypatch):
     def fake_embed_text(chunks):
         return [[0.1, 0.2, 0.3, 0.4] for _ in chunks]
 
-    class FakeVectorStore:
+    class FakeVectorStore(AtomicReplaceFake):
         def __init__(self, dim):
             self.texts = []
 
@@ -401,7 +438,7 @@ def test_ingest_database(monkeypatch):
     def fake_embed_text(chunks):
         return [[0.0, 0.1, 0.2, 0.3] for _ in chunks]
 
-    class FakeVectorStore:
+    class FakeVectorStore(AtomicReplaceFake):
         def __init__(self, dim):
             self.texts = []
 
@@ -419,8 +456,7 @@ def test_ingest_database(monkeypatch):
     resp = client.post(
         "/ingest-database",
         json={
-            "connection_string": "sqlite:///data.db",
-            "table": "policies",
+            "source_id": "policies",
             "collection_id": "reference-data",
         },
     )
@@ -455,7 +491,7 @@ def test_upload_default_document_id_keeps_multiple_files(monkeypatch):
     def fake_embed_text(chunks):
         return [[0.0, 0.1, 0.2, 0.3] for _ in chunks]
 
-    class FakeVectorStore:
+    class FakeVectorStore(AtomicReplaceFake):
         def __init__(self, dim):
             self.rows = []
 
@@ -541,3 +577,11 @@ def test_question_domains_endpoint_returns_catalog():
     assert isinstance(payload["domains"], list)
     assert any(item["id"] == "fact_based" for item in payload["domains"])
     assert any(item["id"] == "conversational_followup" for item in payload["domains"])
+
+
+def test_google_source_identity_uses_entity_not_edit_slug_or_url_variant():
+    first = "https://docs.google.com/document/d/first-doc/edit"
+    variant = "https://docs.google.com/document/d/first-doc/export?format=txt"
+    second = "https://docs.google.com/document/d/second-doc/edit"
+    assert main._resolve_document_id("default", first) == main._resolve_document_id("default", variant)
+    assert main._resolve_document_id("default", first) != main._resolve_document_id("default", second)

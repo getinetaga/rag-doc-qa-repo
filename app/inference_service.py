@@ -10,11 +10,11 @@ from __future__ import annotations
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from pydantic import BaseModel
 
 from . import config
-from .embeddings import get_model
+from .auth import require_service_token
 from .rag import _call_fastest_provider, _call_huggingface, _call_openai
 
 logging.basicConfig(
@@ -35,17 +35,15 @@ class InferenceResponse(BaseModel):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Inference service starting — provider: %s", getattr(config, "LLM_PROVIDER", "openai"))
-    get_model()
-    logger.info("Embedding model pre-loaded for inference service.")
     yield
     logger.info("Inference service shutting down.")
 
 
-app = FastAPI(title="RAG Inference Service", lifespan=lifespan)
+app = FastAPI(title="RAG Inference Service", lifespan=lifespan, dependencies=[Depends(require_service_token)])
 
 
 @app.post("/generate", response_model=InferenceResponse)
-async def generate(req: InferenceRequest):
+def generate(req: InferenceRequest):
     if config.LLM_PROVIDER == "huggingface":
         answer = _call_huggingface(config.HUGGINGFACE_LLM_MODEL, req.prompt)
     elif config.LLM_PROVIDER == "auto":

@@ -10,6 +10,7 @@ export interface ChatMessage {
   question: string;
   answer: string;
   timestamp: string;
+  savedUntil?: number;
 }
 
 /**
@@ -28,18 +29,33 @@ export interface DocumentState {
   name: string;
   sizeKb: number;
   id: string;
+  imageDescription?: string;
 }
+
+export type ImageProcessingMode = "ocr" | "describe";
 
 /**
  * API response from upload endpoint
  */
 export interface UploadResponse {
-  status: "success" | "error";
-  document_id: string;
+  status: "success" | "error" | "queued";
+  document_id?: string;
+  job_id?: string;
+  chunks?: number;
   chunks_indexed?: number;
   embedding_model?: string;
   processing_time_seconds?: number;
   error?: string;
+  content_kind?: "ai_image_description";
+  image_description?: string;
+}
+
+export interface IngestionJob {
+  job_id: string;
+  status: "queued" | "running" | "completed" | "failed";
+  result?: UploadResponse;
+  error?: string;
+  error_code?: string;
 }
 
 /**
@@ -62,11 +78,25 @@ export interface SharePointIngestRequest {
  */
 export interface AskResponse {
   answer: string;
+  answer_id?: string | null;
+  answer_expires_at?: number | null;
   references?: string[];
   retrieval_time_ms?: number;
   generation_time_ms?: number;
   chunks_used?: number;
   error?: string;
+}
+
+export interface SavedAnswer {
+  id: string;
+  created_at: number;
+  expires_at: number;
+  status: "available" | "redacted";
+}
+
+export interface SavedAnswerContent extends SavedAnswer {
+  question: string;
+  answer: string;
 }
 
 /**

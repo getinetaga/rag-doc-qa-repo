@@ -56,6 +56,10 @@ def _load_dotenv_if_present():
 
 _load_dotenv_if_present()
 
+# Mount the policy outside the application/build context. It contains key hashes only.
+RAG_API_USERS_FILE = os.getenv("RAG_API_USERS_FILE", "")
+RAG_SERVICE_TOKEN = os.getenv("RAG_SERVICE_TOKEN", "")
+
 # Read configuration values from the environment (or .env loaded above).
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
@@ -79,6 +83,14 @@ OPENAI_LLM_MODEL = os.getenv("OPENAI_LLM_MODEL", os.getenv("LLM_MODEL", "gpt-4o-
 HUGGINGFACE_LLM_MODEL = os.getenv(
 	"HUGGINGFACE_LLM_MODEL", os.getenv("LLM_MODEL", "google/flan-t5-base")
 )
+
+_image_description_enabled = os.getenv("IMAGE_DESCRIPTION_ENABLED", "false").strip().lower()
+if _image_description_enabled not in {"true", "false"}:
+	raise ValueError("IMAGE_DESCRIPTION_ENABLED must be true or false.")
+IMAGE_DESCRIPTION_ENABLED = _image_description_enabled == "true"
+OPENAI_VISION_MODEL = os.getenv("OPENAI_VISION_MODEL", "gpt-4o-mini").strip()
+if not OPENAI_VISION_MODEL:
+	raise ValueError("OPENAI_VISION_MODEL must not be empty.")
 
 if LLM_PROVIDER == "huggingface":
 	LLM_MODEL = HUGGINGFACE_LLM_MODEL
@@ -105,8 +117,18 @@ RETRIEVAL_RERANK_POOL_SIZE = int(os.getenv("RETRIEVAL_RERANK_POOL_SIZE", str(max
 # The optional service URLs let the API route retrieval and inference to
 # dedicated services backed by a shared persistent vector store.
 API_WORKERS = int(os.getenv("API_WORKERS", "1"))
+MAX_CONCURRENT_ANSWERS = int(os.getenv("MAX_CONCURRENT_ANSWERS", "4"))
+LLM_REQUEST_TIMEOUT_SECONDS = int(os.getenv("LLM_REQUEST_TIMEOUT_SECONDS", "30"))
+if MAX_CONCURRENT_ANSWERS <= 0 or LLM_REQUEST_TIMEOUT_SECONDS <= 0:
+	raise ValueError("Answer concurrency and provider timeout must be positive.")
 RETRIEVAL_SERVICE_URL = os.getenv("RETRIEVAL_SERVICE_URL", "").rstrip("/")
 INFERENCE_SERVICE_URL = os.getenv("INFERENCE_SERVICE_URL", "").rstrip("/")
+
+# Opt-in private storage; never place retained confidential answers in the repo.
+ANSWER_RETENTION_DB = os.getenv("ANSWER_RETENTION_DB", "")
+ANSWER_RETENTION_DAYS = int(os.getenv("ANSWER_RETENTION_DAYS", "30"))
+if not 1 <= ANSWER_RETENTION_DAYS <= 30:
+	raise ValueError("Answer retention must be between 1 and 30 days.")
 
 # Large uploads are pushed into an asynchronous background job when they
 # exceed this size (in bytes). Set to 0 to process all uploads asynchronously.

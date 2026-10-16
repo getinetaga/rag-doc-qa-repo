@@ -9,14 +9,16 @@ same document index.
 from __future__ import annotations
 
 import logging
+import threading
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from pydantic import BaseModel, Field
 
 from . import config
+from .auth import require_service_token
 from .embeddings import embed_text, get_model
-from .rag import _rerank_context_chunks
+from .rag import _build_retrieval_filters, _rerank_context_chunks
 from .vector_store import VectorStore
 
 logging.basicConfig(
@@ -26,12 +28,13 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 vector_store = None
+_store_lock = threading.Lock()
 
 
 class RetrievalRequest(BaseModel):
     question: str
-    tenant_id: str | None = None
-    collection_id: str | None = None
+    tenant_id: str = Field(min_length=1, max_length=128)
+    collection_id: str = Field(min_length=1, max_length=128)
     document_id: str | None = None
     document_date: str | None = None
     author: str | None = None
@@ -60,45 +63,35 @@ async def lifespan(app: FastAPI):
         vector_store.close()
 
 
-app = FastAPI(title="RAG Retrieval Service", lifespan=lifespan)
+app = FastAPI(title="RAG Retrieval Service", lifespan=lifespan, dependencies=[Depends(require_service_token)])
 
 
 def _ensure_vector_store(dim: int):
     global vector_store
-    if vector_store is None:
-        vector_store = VectorStore(dim=dim)
+    with _store_lock:
+        if vector_store is None:
+            vector_store = VectorStore(dim=dim)
     return vector_store
 
 
 @app.post("/search", response_model=RetrievalResponse)
-async def search_context(req: RetrievalRequest):
+def search_context(req: RetrievalRequest):
+    from fastapi import HTTPException
+
+    if req.top_k > config.TOP_K or req.candidate_pool_size > config.RETRIEVAL_RERANK_POOL_SIZE:
+        raise HTTPException(422, "Requested retrieval limits exceed server bounds.")
+    if req.tenant_id.strip().lower() in {"", "default"} or req.collection_id.strip().lower() in {"", "default"}:
+        raise HTTPException(422, "An explicit authorized tenant and collection are required.")
     query_embedding = embed_text([req.question])[0]
     store = _ensure_vector_store(dim=len(query_embedding))
-    filters = {}
-    if req.tenant_id:
-        filters["tenant_id"] = req.tenant_id
-    if req.collection_id:
-        filters["collection_id"] = req.collection_id
-    if req.document_id:
-        filters["document_id"] = req.document_id
-    if req.document_date:
-        filters["document_date"] = req.document_date
-    if req.author:
-        filters["author"] = req.author
-    if req.tag:
-        filters["tag"] = req.tag
-    if req.source_system:
-        filters["source_system"] = req.source_system
-
-    try:
-        candidates = store.search(
-            query_embedding,
-            req.candidate_pool_size,
-            source_document=req.document_id,
-            filters=filters or None,
-        )
-    except TypeError:
-        candidates = store.search(query_embedding, req.top_k)
+    _, _, document_scope, filters = _build_retrieval_filters(
+        req.tenant_id, req.collection_id, req.document_id,
+        req.document_date, req.author, req.tag, req.source_system,
+    )
+    candidates = store.search(
+        query_embedding, req.candidate_pool_size,
+        source_document=document_scope, filters=filters,
+    )
 
     context_chunks = _rerank_context_chunks(req.question, candidates)[: req.top_k]
     return {"context_chunks": context_chunks}

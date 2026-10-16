@@ -1,128 +1,130 @@
-/**
- * Authentication and User Management
- * Handles user login, session storage, and user context
- */
+export interface Scope {
+  tenant_id: string;
+  collection_id: string;
+}
 
 export interface User {
-  id: string;
-  name: string;
-  email: string;
-  loginTime: number;
+  user_id: string;
+  roles: ("read" | "ingest" | "admin")[];
+  scopes: Scope[];
 }
 
-export interface AuthState {
-  user: User | null;
-  isAuthenticated: boolean;
-  error: string | null;
+let apiKey = "";
+let user: User | null = null;
+let scope: Scope | null = null;
+let generation = 0;
+let controller = new AbortController();
+const listeners = new Set<(message?: string) => void>();
+
+export function getCurrentUser() { return user; }
+export function getCurrentScope() { return scope; }
+export function getSessionGeneration() { return generation; }
+export function isCurrentSession(value: number) { return value === generation; }
+
+export function subscribeSession(listener: (message?: string) => void) {
+  listeners.add(listener);
+  return () => { listeners.delete(listener); };
 }
 
-const STORAGE_KEY = "rag_user_session";
-const SESSION_TIMEOUT = 24 * 60 * 60 * 1000; // 24 hours
+function invalidate(message?: string) {
+  generation++;
+  controller.abort();
+  controller = new AbortController();
+  listeners.forEach((listener) => listener(message));
+}
 
-/**
- * Save user session to localStorage
- */
-export function saveSession(user: User): void {
+export function logoutUser(message?: string) {
+  apiKey = "";
+  user = null;
+  scope = null;
+  invalidate(message);
+}
+
+export function selectScope(next: Scope) {
+  const grant = user?.scopes.find(
+    (item) => item.tenant_id === next.tenant_id && item.collection_id === next.collection_id
+  );
+  if (!grant) throw new Error("Select an authorized tenant/project.");
+  scope = grant;
+  invalidate();
+}
+
+export async function loginUser(key: string, apiUrl: string): Promise<User> {
+  logoutUser();
+  const version = generation;
+  const request = new AbortController();
+  const boundary = controller.signal;
+  const abort = () => request.abort();
+  boundary.addEventListener("abort", abort, { once: true });
+  const timer = setTimeout(abort, 15000);
+  let data: User;
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(user));
-  } catch (e) {
-    console.error("Failed to save session:", e);
+    const response = await fetch(`${apiUrl}/session`, {
+      headers: { Authorization: `Bearer ${key}` },
+      signal: request.signal,
+      cache: "no-store",
+      redirect: "error",
+    });
+    if (!response.ok) throw new Error(
+      response.status === 401 ? "Invalid API key. Please sign in again." : "Unable to validate API key."
+    );
+    data = await response.json();
+  } finally {
+    clearTimeout(timer);
+    boundary.removeEventListener("abort", abort);
   }
+  if (!isCurrentSession(version)) throw new Error("Sign-in cancelled.");
+  if (!data.user_id || !Array.isArray(data.roles) ||
+      !data.roles.every((role) => ["read", "ingest", "admin"].includes(role)) ||
+      !Array.isArray(data.scopes) || !data.scopes.length ||
+      !data.scopes.every((grant) => typeof grant.tenant_id === "string" &&
+        !!grant.tenant_id && typeof grant.collection_id === "string" && !!grant.collection_id)) {
+    throw new Error("No valid tenant/project grants were returned for this key.");
+  }
+  apiKey = key;
+  user = data;
+  scope = data.scopes[0];
+  invalidate();
+  return data;
 }
 
-/**
- * Load user session from localStorage
- */
-export function loadSession(): User | null {
+// All protected requests share an abort boundary with the current identity/scope.
+export async function authenticatedFetch(
+  url: string, init: RequestInit = {}, timeout = 60000
+): Promise<Response> {
+  if (!apiKey || !user) throw new Error("Please sign in with your API key.");
+  const version = generation;
+  const boundary = controller.signal;
+  const request = new AbortController();
+  const abort = () => request.abort();
+  boundary.addEventListener("abort", abort, { once: true });
+  init.signal?.addEventListener("abort", abort, { once: true });
+  if (init.signal?.aborted) request.abort();
+  const timer = setTimeout(abort, timeout);
+  const headers = new Headers(init.headers);
+  headers.set("Authorization", `Bearer ${apiKey}`);
   try {
-    const data = localStorage.getItem(STORAGE_KEY);
-    if (!data) return null;
-
-    const user: User = JSON.parse(data);
-    const now = Date.now();
-    
-    // Check if session expired
-    if (now - user.loginTime > SESSION_TIMEOUT) {
-      clearSession();
-      return null;
+    const response = await fetch(url, {
+      ...init, headers, signal: request.signal, cache: "no-store", redirect: "error",
+    });
+    if (!isCurrentSession(version)) throw new Error("Request cancelled.");
+    if (response.status === 401) {
+      logoutUser("Your API key was rejected or expired. Please sign in again.");
+      throw new Error("Your API key was rejected or expired. Please sign in again.");
     }
-
-    return user;
-  } catch (e) {
-    console.error("Failed to load session:", e);
-    clearSession();
-    return null;
+    const body = await response.blob();
+    if (!isCurrentSession(version)) throw new Error("Request cancelled.");
+    return new Response(body, {
+      status: response.status, statusText: response.statusText, headers: response.headers,
+    });
+  } catch (error) {
+    if (request.signal.aborted && isCurrentSession(version)) {
+      throw new Error(init.signal?.aborted ? "Request cancelled." : "Request timed out. Please try again.");
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    boundary.removeEventListener("abort", abort);
+    init.signal?.removeEventListener("abort", abort);
   }
-}
-
-/**
- * Clear user session
- */
-export function clearSession(): void {
-  try {
-    localStorage.removeItem(STORAGE_KEY);
-  } catch (e) {
-    console.error("Failed to clear session:", e);
-  }
-}
-
-/**
- * Validate email format
- */
-export function isValidEmail(email: string): boolean {
-  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-  return emailRegex.test(email);
-}
-
-/**
- * Generate user ID from email
- * In production, this would be handled by backend authentication
- */
-export function generateUserId(email: string): string {
-  return email.toLowerCase().replace(/[^a-z0-9]/g, "_");
-}
-
-/**
- * Login user (simple client-side for demo)
- * In production, this would validate against a backend auth service
- */
-export function loginUser(email: string, password: string): User | null {
-  // Basic validation
-  if (!email || !password) {
-    return null;
-  }
-
-  if (!isValidEmail(email)) {
-    return null;
-  }
-
-  // In production: verify against backend
-  // For now: accept any valid email/password combination
-  if (password.length < 4) {
-    return null;
-  }
-
-  const user: User = {
-    id: generateUserId(email),
-    name: email.split("@")[0], // Use email prefix as display name
-    email: email,
-    loginTime: Date.now(),
-  };
-
-  saveSession(user);
-  return user;
-}
-
-/**
- * Logout user
- */
-export function logoutUser(): void {
-  clearSession();
-}
-
-/**
- * Get current user
- */
-export function getCurrentUser(): User | null {
-  return loadSession();
 }

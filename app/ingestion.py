@@ -23,6 +23,7 @@ import pdfplumber
 import requests
 
 from . import config
+from .ingestion_errors import IngestionError
 
 logger = logging.getLogger(__name__)
 
@@ -143,16 +144,20 @@ def extract_image(path: Path) -> str:
     try:
         from PIL import Image
     except ImportError as exc:
-        raise RuntimeError("Pillow is required for image ingestion. Install `Pillow`.") from exc
+        raise IngestionError("ocr_unavailable") from exc
 
     try:
         import pytesseract
     except ImportError as exc:
-        raise RuntimeError("pytesseract is required for image OCR. Install `pytesseract`.") from exc
+        raise IngestionError("ocr_unavailable") from exc
 
     with Image.open(path) as img:
         # RGB normalization improves OCR consistency across image formats.
-        text = pytesseract.image_to_string(img.convert("RGB"))
+        try:
+            text = pytesseract.image_to_string(img.convert("RGB"))
+        except pytesseract.TesseractNotFoundError:
+            logger.warning("Image OCR engine is unavailable.")
+            raise IngestionError("ocr_unavailable") from None
     return text.strip()
 
 

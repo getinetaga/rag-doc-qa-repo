@@ -32,18 +32,21 @@ import hashlib
 import re # The re module is used for regular expression operations, such as extracting meaningful terms from questions and answers, and for text preprocessing tasks.
 import threading
 import time
+import uuid
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from contextlib import nullcontext
 
 import requests # The requests library is used to make HTTP requests to the Hugging Face Inference API when the Hugging Face provider is configured.
 from openai import OpenAI, OpenAIError # The OpenAI library is used to interact with OpenAI's Responses API when the OpenAI provider is configured.
 
 from . import config
-from .embeddings import embed_text
+from .embeddings import _MODEL_NAME, embed_text
 from . import slo_metrics
 
 logger = logging.getLogger(__name__)
 
 _openai_client = None
+_OPENAI_CLIENT_LOCK = threading.Lock()
 _CACHE_LOCK = threading.RLock()
 _RESPONSE_CACHE: OrderedDict[tuple, tuple[float, str]] = OrderedDict()
 _RETRIEVAL_CACHE: OrderedDict[tuple, tuple[float, list[str]]] = OrderedDict()
@@ -320,19 +323,20 @@ def _get_openai_client():
     if _openai_client is not None:
         return _openai_client
 
-    try:
-        if config.OPENAI_API_KEY:
-            _openai_client = OpenAI(api_key=config.OPENAI_API_KEY)
-        else:
-            # Let the SDK pick up the key from environment variables if set;
-            # this will raise OpenAIError if no key is available when used.
-            _openai_client = OpenAI()
-        return _openai_client
-    except OpenAIError as e:
-        # Re-raise with a clearer message for callers
-        raise OpenAIError(
-            "OpenAI client initialization failed: set OPENAI_API_KEY in environment or .env"
-        ) from e
+    with _OPENAI_CLIENT_LOCK:
+        if _openai_client is not None:
+            return _openai_client
+        try:
+            _openai_client = OpenAI(
+                api_key=config.OPENAI_API_KEY or None,
+                timeout=config.LLM_REQUEST_TIMEOUT_SECONDS,
+                max_retries=0,
+            )
+            return _openai_client
+        except OpenAIError as e:
+            raise OpenAIError(
+                "OpenAI client initialization failed: set OPENAI_API_KEY in environment or .env"
+            ) from e
 
 
 def _call_huggingface(model: str, prompt: str) -> str:
@@ -361,7 +365,9 @@ def _call_huggingface(model: str, prompt: str) -> str:
         "options": {"wait_for_model": True},
     }
 
-    resp = requests.post(url, headers=headers, json=payload, timeout=30)
+    resp = requests.post(
+        url, headers=headers, json=payload, timeout=config.LLM_REQUEST_TIMEOUT_SECONDS,
+    )
     resp.raise_for_status()
     data = resp.json()
 
@@ -535,20 +541,50 @@ def _normalize_scope_value(value: str | None) -> str | None:
 
 
 def _vector_signature(query_embedding) -> str:
-    values = [f"{float(value):.4f}" for value in query_embedding]
+    values = [float(value).hex() for value in query_embedding]
     return hashlib.sha256("|".join(values).encode("utf-8")).hexdigest()
 
 
-def _cache_key_prefix(vector_store, tenant_id: str | None, collection_id: str | None, document_id: str | None) -> tuple:
+def _cache_key_prefix(vector_store, tenant_id: str | None, collection_id: str | None, document_id: str | None, filters=None) -> tuple:
+    namespace = getattr(vector_store, "cache_namespace", None)
+    if namespace is None:
+        namespace = uuid.uuid4().hex
+        vector_store.cache_namespace = namespace
     return (
+        namespace,
         int(getattr(vector_store, "revision", 0) or 0),
+        tuple(sorted((str(key), str(value)) for key, value in (filters or {}).items())),
+        _MODEL_NAME,
+        config.EMBEDDING_DIM,
+        "dense-ranking-v1",
+        "grounded-prompt-v1",
         config.LLM_PROVIDER,
         config.OPENAI_LLM_MODEL,
         config.HUGGINGFACE_LLM_MODEL,
         config.TOP_K,
+        config.RETRIEVAL_RERANK_POOL_SIZE,
+        config.RETRIEVAL_SERVICE_URL,
+        config.INFERENCE_SERVICE_URL,
         _normalize_scope_value(tenant_id) or "",
         _normalize_scope_value(collection_id) or "",
         _normalize_scope_value(document_id) or "",
+    )
+
+
+def _can_cache(vector_store) -> bool:
+    # Persistent/shared stores need durable generations before cross-request caching.
+    return not config.RETRIEVAL_SERVICE_URL and getattr(vector_store, "backend", None) not in {"pgvector", "hybrid"}
+
+
+def _response_cache_key(vector_store, question, tenant_scope, collection_scope, document_scope, filters):
+    return (
+        "response",
+        *_cache_key_prefix(vector_store, tenant_scope, collection_scope, document_scope, filters),
+        filters.get("document_date") or "",
+        filters.get("author") or "",
+        filters.get("tag") or "",
+        filters.get("source_system") or "",
+        _normalize_question(question),
     )
 
 
@@ -620,10 +656,16 @@ def _cache_set(cache: OrderedDict, key, value, max_size: int):
             cache.popitem(last=False)
 
 
-def _post_json(url: str, payload: dict, timeout: int = 30) -> dict:
+def _post_json(url: str, payload: dict, timeout: int | None = None) -> dict:
     """POST JSON to a service endpoint and return the decoded payload."""
 
-    response = requests.post(url, json=payload, timeout=timeout)
+    if not config.RAG_SERVICE_TOKEN or len(config.RAG_SERVICE_TOKEN) < 32:
+        raise RuntimeError("Service authentication is not configured.")
+    response = requests.post(
+        url, json=payload,
+        timeout=config.LLM_REQUEST_TIMEOUT_SECONDS if timeout is None else timeout,
+        headers={"Authorization": f"Bearer {config.RAG_SERVICE_TOKEN}"},
+    )
     response.raise_for_status()
     data = response.json()
     if not isinstance(data, dict):
@@ -669,31 +711,31 @@ def _retrieve_context_chunks(
             "candidate_pool_size": config.RETRIEVAL_RERANK_POOL_SIZE,
         }
         data = _post_json(f"{config.RETRIEVAL_SERVICE_URL}/search", payload)
-        return data.get("context_chunks", [])
+        chunks = data.get("context_chunks")
+        if not isinstance(chunks, list) or len(chunks) > config.TOP_K or any(not isinstance(chunk, str) for chunk in chunks):
+            raise RuntimeError("Retrieval service returned an invalid context response.")
+        return chunks
 
-    cache_prefix = _cache_key_prefix(vector_store, tenant_scope, collection_scope, document_scope)
+    cache_prefix = _cache_key_prefix(vector_store, tenant_scope, collection_scope, document_scope, filters)
     retrieval_cache_key = (
         "retrieval",
         *cache_prefix,
         config.RETRIEVAL_RERANK_POOL_SIZE,
         _vector_signature(query_embedding),
     )
-    cached_search_results = _cache_get(_RETRIEVAL_CACHE, retrieval_cache_key)
+    cache_enabled = _can_cache(vector_store)
+    cached_search_results = _cache_get(_RETRIEVAL_CACHE, retrieval_cache_key) if cache_enabled else None
     if cached_search_results is not None:
         search_results = list(cached_search_results)
     else:
-        try:
-            search_results = vector_store.search(
-                query_embedding,
-                config.RETRIEVAL_RERANK_POOL_SIZE,
-                source_document=document_scope,
-                filters=filters or None,
-            )
-        except TypeError:
-            # Backward compatibility for legacy vector-store implementations
-            # that only support search(query_embedding, top_k).
-            search_results = vector_store.search(query_embedding, config.TOP_K)
-        _cache_set(_RETRIEVAL_CACHE, retrieval_cache_key, list(search_results), _RETRIEVAL_CACHE_MAX_SIZE)
+        search_results = vector_store.search(
+            query_embedding,
+            config.RETRIEVAL_RERANK_POOL_SIZE,
+            source_document=document_scope,
+            filters=filters or None,
+        )
+        if cache_enabled:
+            _cache_set(_RETRIEVAL_CACHE, retrieval_cache_key, list(search_results), _RETRIEVAL_CACHE_MAX_SIZE)
 
     return _rerank_context_chunks(question, search_results)[: config.TOP_K]
 
@@ -944,45 +986,49 @@ def generate_answer(
         source_system=source_system,
     )
 
-    cache_prefix = (
-        *_cache_key_prefix(vector_store, tenant_scope, collection_scope, document_scope),
-        filters.get("document_date") or "",
-        filters.get("author") or "",
-        filters.get("tag") or "",
-        filters.get("source_system") or "",
-    )
-    normalized_question = _normalize_question(question)
-    response_cache_key = ("response", *cache_prefix, normalized_question)
-    cached_answer = _cache_get(_RESPONSE_CACHE, response_cache_key)
+    cache_enabled = _can_cache(vector_store)
+    snapshot = nullcontext if config.RETRIEVAL_SERVICE_URL else getattr(vector_store, "read_snapshot", nullcontext)
+    with snapshot():
+        response_cache_key = _response_cache_key(
+            vector_store, question, tenant_scope, collection_scope, document_scope, filters,
+        )
+        cached_answer = _cache_get(_RESPONSE_CACHE, response_cache_key) if cache_enabled else None
     if cached_answer is not None:
-        logger.debug("Response cache hit for question=%r.", normalized_question)
+        logger.debug("Response cache hit.")
         slo_metrics.record_request(time.monotonic() - request_started_at, success=True)
         return cached_answer
 
     query_embedding = embed_text([question])[0]
-    context_chunks = _retrieve_context_chunks(
-        question,
-        query_embedding,
-        vector_store,
-        tenant_scope,
-        collection_scope,
-        document_scope,
-        document_date=filters.get("document_date"),
-        author=filters.get("author"),
-        tag=filters.get("tag"),
-        source_system=filters.get("source_system"),
-    )
+    with snapshot():
+        # Embedding can overlap replacement; key the retrieved context to its actual revision.
+        response_cache_key = _response_cache_key(
+            vector_store, question, tenant_scope, collection_scope, document_scope, filters,
+        )
+        context_chunks = _retrieve_context_chunks(
+            question,
+            query_embedding,
+            vector_store,
+            tenant_scope,
+            collection_scope,
+            document_scope,
+            document_date=filters.get("document_date"),
+            author=filters.get("author"),
+            tag=filters.get("tag"),
+            source_system=filters.get("source_system"),
+        )
     slo_metrics.record_retrieval_quality(question, context_chunks, _retrieval_quality_score(question, context_chunks))
 
     if not context_chunks:
-        _cache_set(_RESPONSE_CACHE, response_cache_key, NO_RELEVANT_INFO_RESPONSE, _RESPONSE_CACHE_MAX_SIZE)
+        if cache_enabled:
+            _cache_set(_RESPONSE_CACHE, response_cache_key, NO_RELEVANT_INFO_RESPONSE, _RESPONSE_CACHE_MAX_SIZE)
         slo_metrics.record_request(time.monotonic() - request_started_at, success=True)
         return NO_RELEVANT_INFO_RESPONSE
 
     # Avoid spending a provider call when lexical retrieval signals no
     # question-to-context relationship at all.
     if not _has_relevant_context(question, context_chunks):
-        _cache_set(_RESPONSE_CACHE, response_cache_key, NO_RELEVANT_INFO_RESPONSE, _RESPONSE_CACHE_MAX_SIZE)
+        if cache_enabled:
+            _cache_set(_RESPONSE_CACHE, response_cache_key, NO_RELEVANT_INFO_RESPONSE, _RESPONSE_CACHE_MAX_SIZE)
         slo_metrics.record_request(time.monotonic() - request_started_at, success=True)
         return NO_RELEVANT_INFO_RESPONSE
 
@@ -1062,15 +1108,17 @@ Answer:
             final_answer = NO_RELEVANT_INFO_RESPONSE
         else:
             final_answer = _append_references(cleaned, context_chunks)
-        _cache_set(_RESPONSE_CACHE, response_cache_key, final_answer, _RESPONSE_CACHE_MAX_SIZE)
+        if cache_enabled:
+            _cache_set(_RESPONSE_CACHE, response_cache_key, final_answer, _RESPONSE_CACHE_MAX_SIZE)
         slo_metrics.record_request(time.monotonic() - request_started_at, success=True)
         return final_answer
     except (OpenAIError, requests.RequestException, RuntimeError, ValueError) as exc:
         logger.warning(
-            "LLM provider failed (%.2fs): %s — using fallback answer.",
-            time.monotonic() - _t0, exc,
+            "LLM provider failed (%.2fs, %s) — using fallback answer.",
+            time.monotonic() - _t0, type(exc).__name__,
         )
         final_answer = _finalize_answer(_provider_error_answer(question, context_chunks, exc), question, context_chunks)
-        _cache_set(_RESPONSE_CACHE, response_cache_key, final_answer, _RESPONSE_CACHE_MAX_SIZE)
+        if cache_enabled:
+            _cache_set(_RESPONSE_CACHE, response_cache_key, final_answer, _RESPONSE_CACHE_MAX_SIZE)
         slo_metrics.record_request(time.monotonic() - request_started_at, success=False)
         return final_answer
